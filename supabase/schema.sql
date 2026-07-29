@@ -1,4 +1,4 @@
--- Smart Timetable Phase 1 schema
+  -- Smart Timetable Phase 1 schema
 create extension if not exists "pgcrypto";
 
 create table if not exists public.semesters (
@@ -33,7 +33,8 @@ create table if not exists public.classes (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   code text not null unique,
-  shift text not null check (shift in ('Morning', 'Afternoon'))
+  shift text not null check (shift in ('Morning', 'Afternoon')),
+  intake_year integer not null default extract(year from current_date)
 );
 
 create index if not exists subjects_semester_id_idx on public.subjects(semester_id);
@@ -54,3 +55,18 @@ create policy "Phase 1 semester access" on public.semesters for all to anon usin
 create policy "Phase 1 subject access" on public.subjects for all to anon using (true) with check (true);
 create policy "Phase 1 lecturer access" on public.lecturers for all to anon using (true) with check (true);
 create policy "Phase 1 class access" on public.classes for all to anon using (true) with check (true);
+
+create table if not exists public.timetable_slots (
+  id uuid primary key default gen_random_uuid(),
+  class_id uuid not null references public.classes(id) on delete cascade,
+  subject_id uuid not null references public.subjects(id) on delete cascade,
+  lecturer_id uuid not null references public.lecturers(id) on delete cascade,
+  day_of_week text not null check (day_of_week in ('Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday')),
+  slot_number integer not null check (slot_number in (1, 2, 3)),
+  unique(class_id, day_of_week, slot_number),
+  unique(lecturer_id, day_of_week, slot_number)
+);
+
+alter table public.timetable_slots enable row level security;
+drop policy if exists "Phase 1 timetable access" on public.timetable_slots;
+create policy "Phase 1 timetable access" on public.timetable_slots for all to anon using (true) with check (true);
