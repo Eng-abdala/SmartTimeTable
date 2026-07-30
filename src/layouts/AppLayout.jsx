@@ -36,12 +36,15 @@ export function AppLayout() {
   useEffect(() => { loadData() }, [])
 
   async function save(table, values, id) {
-    const query = id ? supabase.from(table).update(values).eq('id', id) : supabase.from(table).insert(values)
-    const { error } = await query
+    const query = id
+      ? supabase.from(table).update(values).eq('id', id).select().single()
+      : supabase.from(table).insert(values).select().single()
+    const { data: savedRecord, error } = await query
     if (error) return setNotice(error.message)
     setModal(null)
     setNotice(`${id ? 'Changes' : 'New record'} saved successfully.`)
     await loadData()
+    return savedRecord
   }
 
   async function remove(table, id) {
@@ -66,6 +69,101 @@ export function AppLayout() {
     ['Total Lecturers', lecturers.length, 'users', 'bg-[#7b61c9]'],
     ['Total Classes', classes.length, 'group', 'bg-[#ef7f61]'],
   ]
+
+  const [subjectLecturersMap, setSubjectLecturersMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('subject_lecturers_map') || '{}')
+    } catch {
+      return {}
+    }
+  })
+
+  const [lecturerSubjectsMap, setLecturerSubjectsMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('lecturer_subjects_map') || '{}')
+    } catch {
+      return {}
+    }
+  })
+
+  const saveLecturerTaughtSubjects = (lecturerId, taughtSubjects) => {
+    const updated = {
+      ...lecturerSubjectsMap,
+      [lecturerId]: taughtSubjects
+    }
+    setLecturerSubjectsMap(updated)
+    localStorage.setItem('lecturer_subjects_map', JSON.stringify(updated))
+  }
+
+  const getLecturerTaughtSubjects = (lecturerId) => {
+    const list = lecturerSubjectsMap[lecturerId]
+    if (Array.isArray(list)) return list
+    const lecturer = lecturers.find(l => l.id === lecturerId)
+    if (lecturer && Array.isArray(lecturer.taught_subjects)) return lecturer.taught_subjects
+    return []
+  }
+
+  const isLecturerQualified = (lecturer, subject) => {
+    const taught = getLecturerTaughtSubjects(lecturer.id)
+    if (!taught || taught.length === 0) return false
+    return taught.includes(subject.name) || taught.includes(subject.code)
+  }
+
+  const saveSubjectLecturersMap = (newMap) => {
+    setSubjectLecturersMap(newMap)
+    localStorage.setItem('subject_lecturers_map', JSON.stringify(newMap))
+  }
+
+  const assignLecturersToSubject = async (subjectId, lecturerIds) => {
+    // Optimistic local update — no full page reload
+    const updatedMap = {
+      ...subjectLecturersMap,
+      [subjectId]: {
+        ...subjectLecturersMap[subjectId],
+        lecturer_ids: lecturerIds
+      }
+    }
+    saveSubjectLecturersMap(updatedMap)
+
+    // Also update subjects state locally so stats refresh instantly
+    setSubjects(prev => prev.map(s =>
+      s.id === subjectId ? { ...s, lecturer_id: lecturerIds[0] || null } : s
+    ))
+
+    // Sync to DB in background (no await on page render path)
+    const primaryId = lecturerIds.length > 0 ? lecturerIds[0] : null
+    supabase.from('subjects').update({ lecturer_id: primaryId }).eq('id', subjectId)
+      .then(({ error }) => { if (error) setNotice(error.message) })
+  }
+
+  const getSubjectLecturers = (subjectId) => {
+    const entry = subjectLecturersMap[subjectId]
+    if (entry && Array.isArray(entry.lecturer_ids)) {
+      return lecturers.filter(l => entry.lecturer_ids.includes(l.id))
+    }
+    const sub = subjects.find(s => s.id === subjectId)
+    if (sub && sub.lecturer_id) {
+      const dbL = lecturers.find(l => l.id === sub.lecturer_id)
+      return dbL ? [dbL] : []
+    }
+    return []
+  }
+
+  const getRandomLecturerForClass = (subjectId, classId) => {
+    const subjectLecturersList = getSubjectLecturers(subjectId)
+    if (!subjectLecturersList || subjectLecturersList.length === 0) return null
+    if (subjectLecturersList.length === 1) return subjectLecturersList[0]
+
+    // Deterministic random hash per (subjectId + classId) combination
+    let hash = 0
+    const str = (subjectId || '') + (classId || '')
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash << 5) - hash + str.charCodeAt(i)
+      hash |= 0
+    }
+    const index = Math.abs(hash) % subjectLecturersList.length
+    return subjectLecturersList[index]
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f8fa] font-sans text-[#16333a] lg:flex">
@@ -104,11 +202,25 @@ export function AppLayout() {
         {loading ? (
           <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">Loading timetable data…</div>
         ) : (
-          <Outlet context={{ semesters, subjects, lecturers, classes, setModal, remove, metrics, loadData, setNotice }} />
+          <Outlet context={{ 
+            semesters, subjects, lecturers, classes, setModal, remove, metrics, loadData, setNotice, 
+            subjectLecturersMap, assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
+            lecturerSubjectsMap, saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
+          }} />
         )}
       </main>
       
-      {modal && <Modal modal={modal} semester={modal.semester} onClose={() => setModal(null)} onSave={save} />}
+      {modal && (
+        <Modal 
+          modal={modal} 
+          semester={modal.semester} 
+          subjects={subjects} 
+          getLecturerTaughtSubjects={getLecturerTaughtSubjects}
+          saveLecturerTaughtSubjects={saveLecturerTaughtSubjects}
+          onClose={() => setModal(null)} 
+          onSave={save} 
+        />
+      )}
     </div>
   )
 }

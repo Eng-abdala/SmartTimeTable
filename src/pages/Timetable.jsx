@@ -34,15 +34,34 @@ const COLORS = [
   'bg-indigo-50 border-indigo-200 text-indigo-900',
 ]
 
-function generateTimetable(semesterSubjects, lecturers, shift) {
-  // We want to create a list of sessions, and distribute them across the days.
-  // We break each subject's theory/lab hours into sessions. 1 session = 1 period.
-  // Example: 3 theory hours = 3 sessions.
+function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers) {
+  // ── Step 1: Assign lecturers to subjects for this specific class ──────────
+  // Constraint: one lecturer → one subject per class (no lecturer teaches two subjects to the same class)
+  const usedLecturerIds = new Set()        // lecturers already committed to a subject for this class
+  const subjectLecturerMap = new Map()     // subjectId → lecturer object
+
+  for (const sub of semesterSubjects) {
+    // Get all qualified lecturers for this subject
+    const qualifiedForSubject = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
+
+    // Try the preferred random pick first, then cycle through qualified, then fall back to anyone
+    const preferred = getRandomLecturerForClass ? getRandomLecturerForClass(sub.id, selectedClassId) : null
+    const candidates = preferred
+      ? [preferred, ...qualifiedForSubject.filter(l => l.id !== preferred.id), ...lecturers.filter(l => !qualifiedForSubject.some(q => q.id === l.id) && l.id !== preferred?.id)]
+      : [...qualifiedForSubject, ...lecturers.filter(l => !qualifiedForSubject.some(q => q.id === l.id))]
+
+    // Pick the first candidate not already used for another subject in this class
+    const assigned = candidates.find(l => l && !usedLecturerIds.has(l.id)) || null
+    if (assigned) usedLecturerIds.add(assigned.id)
+    subjectLecturerMap.set(sub.id, assigned)
+  }
+
+  // ── Step 2: Build blocks from subjects ───────────────────────────────────
   const blocks = []
   semesterSubjects.forEach(sub => {
-    const lecturer = lecturers.find(l => l.id === sub.lecturer_id)
-    
-    // Group into 2s and 1s as is standard for timetables
+    const lecturer = subjectLecturerMap.get(sub.id)
+
+    // Group into 2-period and 1-period blocks (standard timetable chunking)
     let t = sub.theory_hours
     while (t > 0) {
       let size = t >= 2 ? 2 : 1
@@ -57,7 +76,7 @@ function generateTimetable(semesterSubjects, lecturers, shift) {
     }
   })
 
-  // We assign these block chunks into days.
+  // ── Step 3: Spread blocks across days ────────────────────────────────────
   const timetable = {}
   DAYS.forEach(d => { timetable[d] = [] })
   const daySlotCount = { Saturday: 0, Sunday: 0, Monday: 0, Tuesday: 0, Wednesday: 0 }
@@ -66,22 +85,20 @@ function generateTimetable(semesterSubjects, lecturers, shift) {
   const baseMax = Math.ceil(totalPeriods / 5)
 
   const getMaxSlots = (day) => {
-    let m = Math.max(baseMax, 4) // Ensure at least 4 slots per day
+    let m = Math.max(baseMax, 4)
     if (shift === 'Morning' && (day === 'Tuesday' || day === 'Wednesday')) m = Math.max(m, 5)
     return m
   }
 
-  // Simple round-robin to spread the blocks nicely across the week
+  // Simple round-robin to spread blocks evenly across the week
   let dayIdx = 0
-  for (let block of blocks) {
+  for (const block of blocks) {
     let placed = false
-    let startDayIdx = dayIdx
-    
-    // Find the next day that has enough room for this block size
+    const startDayIdx = dayIdx
+
     do {
       const day = DAYS[dayIdx]
       if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
-        // Place the periods
         for (let i = 0; i < block.size; i++) {
           timetable[day].push({
             slotIndex: daySlotCount[day],
@@ -98,10 +115,10 @@ function generateTimetable(semesterSubjects, lecturers, shift) {
       dayIdx = (dayIdx + 1) % DAYS.length
     } while (dayIdx !== startDayIdx)
 
-    // Fallback if we couldn't place it cleanly (just dump it wherever there's space)
+    // Fallback: dump wherever there's space
     if (!placed) {
       for (let i = 0; i < block.size; i++) {
-        for (let day of DAYS) {
+        for (const day of DAYS) {
           if (daySlotCount[day] < getMaxSlots(day)) {
             timetable[day].push({
               slotIndex: daySlotCount[day],
@@ -116,12 +133,13 @@ function generateTimetable(semesterSubjects, lecturers, shift) {
       }
     }
   }
-  
+
   return timetable
 }
 
+
 export function Timetable() {
-  const { classes, semesters, subjects, lecturers } = useOutletContext()
+  const { classes, semesters, subjects, lecturers, getRandomLecturerForClass, getSubjectLecturers } = useOutletContext()
 
   const [selectedYear, setSelectedYear] = useState(() => localStorage.getItem('tt_year') || '')
   const [selectedSemesterId, setSelectedSemesterId] = useState(() => localStorage.getItem('tt_semester') || '')
@@ -178,7 +196,10 @@ export function Timetable() {
 
   const handleGenerate = () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
-    const grid = generateTimetable(semesterSubjects, lecturers, selectedClass.shift)
+    const grid = generateTimetable(
+      semesterSubjects, lecturers, selectedClass.shift,
+      selectedClass.id, getRandomLecturerForClass, getSubjectLecturers
+    )
     setTimetable(grid)
     setGenerated(true)
     localStorage.setItem('tt_grid', JSON.stringify(grid))

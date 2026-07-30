@@ -16,8 +16,17 @@ create table if not exists public.subjects (
   total_hours integer not null check (total_hours >= 0),
   theory_hours integer not null default 0 check (theory_hours >= 0),
   lab_hours integer not null default 0 check (lab_hours >= 0),
+  lecturer_id uuid references public.lecturers(id) on delete set null,
   constraint subjects_hours_match check (total_hours = theory_hours + lab_hours),
   constraint subjects_code_per_semester unique (semester_id, code)
+);
+
+create table if not exists public.subject_lecturers (
+  id uuid primary key default gen_random_uuid(),
+  subject_id uuid not null references public.subjects(id) on delete cascade,
+  lecturer_id uuid not null references public.lecturers(id) on delete cascade,
+  class_id uuid references public.classes(id) on delete cascade,
+  unique(subject_id, lecturer_id, class_id)
 );
 
 create table if not exists public.lecturers (
@@ -26,6 +35,7 @@ create table if not exists public.lecturers (
   name text not null,
   is_all_week boolean not null default true,
   available_days text[] not null default '{}',
+  taught_subjects text[] not null default '{}',
   constraint lecturers_available_days check (is_all_week = true or cardinality(available_days) > 0)
 );
 
