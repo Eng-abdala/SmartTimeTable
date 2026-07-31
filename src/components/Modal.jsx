@@ -12,8 +12,8 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
   const [form, setForm] = useState(
     typeof modal === 'object' ? { ...modal.data, taught_subjects: initialTaught } : 
     type === 'lecturer' ? { lecturer_id: '', name: '', is_all_week: true, available_days: [], taught_subjects: [] } : 
-    type === 'class' ? { name: '', code: '', shift: 'Morning', intake_year: new Date().getFullYear() } : 
-    { name: '', code: '' }
+    type === 'class' ? { name: '', shift: 'Morning', intake_year: new Date().getFullYear() } : 
+    { name: '' }
   )
 
   const [customSubject, setCustomSubject] = useState('')
@@ -21,7 +21,23 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
   // Unique list of subjects from curriculum
   const availableSubjectNames = Array.from(new Set((subjects || []).map(s => s.name).filter(Boolean)))
 
-  const change = (key, value) => setForm((current) => ({ ...current, [key]: value }))
+  const change = (key, value) => {
+    if (key === 'name' && type === 'class') {
+      // Auto-detect year from class name: read the first 2 digits after letters
+      // e.g. CA23 → 2023, CA235 → 2023, CN24 → 2024, CM26 → 2026
+      const match = value.match(/^[A-Za-z]+(\d{2})/)
+      if (match) {
+        const shortYear = parseInt(match[1], 10)
+        // Only auto-set if it's a valid intake year (20-27 range = 2020-2027)
+        if (shortYear >= 20 && shortYear <= 30) {
+          const fullYear = 2000 + shortYear
+          setForm((current) => ({ ...current, [key]: value, intake_year: fullYear }))
+          return
+        }
+      }
+    }
+    setForm((current) => ({ ...current, [key]: value }))
+  }
   
   const submit = async (event) => { 
     event.preventDefault()
@@ -30,7 +46,7 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
       const lab = Number(form.lab_hours) || 0
       return onSave('subjects', { 
         semester_id: semester.id, 
-        code: form.code, 
+        code: form.code,
         name: form.name, 
         theory_hours: theory, 
         lab_hours: lab, 
@@ -41,6 +57,11 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
     
     // Omit taught_subjects when saving directly to Supabase table to avoid schema errors
     const { taught_subjects, ...dbPayload } = form
+
+    // Auto-generate code from name if missing (classes, semesters, subjects all have a NOT NULL code column)
+    if ((type === 'class' || type === 'semester' || type === 'subject') && !dbPayload.code) {
+      dbPayload.code = (dbPayload.name || '').toUpperCase().replace(/\s+/g, '-').slice(0, 20)
+    }
 
     const savedRecord = await onSave(table, dbPayload, form.id)
 
@@ -84,7 +105,6 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
           {type === 'semester' && (
             <>
               <Field label="Semester Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Semester 6 - Spring 2026" />
-              <Field label="Semester Code" value={form.code} onChange={(v) => change('code', v)} placeholder="SEM-06" />
             </>
           )}
           
@@ -104,68 +124,6 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
               <Field label="Lecturer ID" value={form.lecturer_id} onChange={(v) => change('lecturer_id', v)} placeholder="LEC-101" />
               <Field label="Full Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Yahye Ali Isse" />
               
-              {/* Taught Subjects Section */}
-              <div className="rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50/50">
-                <div>
-                  <b className="block text-sm text-brand-950">Subjects Taught / Qualified To Teach</b>
-                  <span className="text-xs text-slate-500">Select subjects this lecturer can teach to filter them when assigning in semesters</span>
-                </div>
-
-                <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto p-1">
-                  {availableSubjectNames.length > 0 ? (
-                    availableSubjectNames.map((subName) => {
-                      const isSelected = (form.taught_subjects || []).includes(subName)
-                      return (
-                        <button
-                          type="button"
-                          key={subName}
-                          onClick={() => toggleSubject(subName)}
-                          className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition border ${
-                            isSelected 
-                              ? 'bg-brand-600 border-brand-600 text-white shadow-xs' 
-                              : 'bg-white border-slate-200 text-slate-600 hover:border-brand-300'
-                          }`}
-                        >
-                          {isSelected ? '✓ ' : '+ '}{subName}
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <p className="text-xs text-slate-400 italic">No subjects created in curriculum yet. Type custom subject below.</p>
-                  )}
-                </div>
-
-                {/* Custom Subject Input */}
-                <div className="flex gap-2 pt-1 border-t border-slate-200/60">
-                  <input 
-                    type="text" 
-                    value={customSubject}
-                    onChange={(e) => setCustomSubject(e.target.value)}
-                    placeholder="Add specific subject (e.g. C# Programming)"
-                    className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 outline-none focus:border-brand-600"
-                  />
-                  <button 
-                    type="button" 
-                    onClick={addCustomSubject}
-                    className="rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-300"
-                  >
-                    Add
-                  </button>
-                </div>
-
-                {/* Selected Subjects Summary Pills */}
-                {form.taught_subjects?.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-2">
-                    <span className="text-[11px] text-slate-400 self-center">Selected:</span>
-                    {form.taught_subjects.map(s => (
-                      <span key={s} className="inline-flex items-center gap-1 rounded-md bg-cyan-100 px-2 py-0.5 text-[11px] font-bold text-brand-800">
-                        {s}
-                        <button type="button" onClick={() => toggleSubject(s)} className="text-rose-600 font-bold">×</button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
 
               <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 p-4 bg-white">
                 <span>
@@ -194,7 +152,6 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
           {type === 'class' && (
             <>
               <Field label="Class Name" value={form.name} onChange={(v) => change('name', v)} placeholder="CA235" />
-              <Field label="Class Code" value={form.code} onChange={(v) => change('code', v)} placeholder="CLS-CA235" />
               <div className="grid grid-cols-2 gap-4">
                 <label className="block text-sm font-semibold text-brand-950">
                   Shift
@@ -205,12 +162,18 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
                 </label>
                 <label className="block text-sm font-semibold text-brand-950">
                   Intake Year
-                  <select value={form.intake_year} onChange={(e) => change('intake_year', Number(e.target.value))} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
-                    <option value={2026}>2026</option>
-                    <option value={2025}>2025</option>
-                    <option value={2024}>2024</option>
-                    <option value={2023}>2023</option>
-                  </select>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <select value={form.intake_year} onChange={(e) => change('intake_year', Number(e.target.value))} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
+                      <option value={2027}>2027</option>
+                      <option value={2026}>2026</option>
+                      <option value={2025}>2025</option>
+                      <option value={2024}>2024</option>
+                      <option value={2023}>2023</option>
+                    </select>
+                    {form.name && form.name.match(/\d{2}$/) && (
+                      <span className="shrink-0 rounded-lg bg-cyan-100 px-2 py-1 text-xs font-bold text-brand-700">Auto ✓</span>
+                    )}
+                  </div>
                 </label>
               </div>
             </>

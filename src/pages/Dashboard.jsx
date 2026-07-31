@@ -35,7 +35,6 @@ export function Dashboard() {
               {semesters.slice(0, 4).map(s => (
                 <div key={s.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3">
                   <span className="font-semibold text-brand-950">{s.name}</span>
-                  <span className="rounded-lg bg-cyan-100 px-2 py-1 text-xs font-bold text-brand-700">{s.code}</span>
                 </div>
               ))}
             </div>

@@ -1,11 +1,10 @@
 import { useOutletContext, useParams, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
-import { useMemo } from 'react'
+import { useMemo, useState, useRef, useEffect } from 'react'
 
-const blankSubject = { code: '', name: '', theory_hours: 0, lab_hours: 0 }
+const blankSubject = { name: '', theory_hours: 0, lab_hours: 0 }
 
-// Helper for consistent avatar color based on lecturer name
 const LECTURER_COLORS = [
   'bg-blue-100 text-blue-700 border-blue-200',
   'bg-purple-100 text-purple-700 border-purple-200',
@@ -13,6 +12,8 @@ const LECTURER_COLORS = [
   'bg-amber-100 text-amber-700 border-amber-200',
   'bg-rose-100 text-rose-700 border-rose-200',
   'bg-cyan-100 text-cyan-700 border-cyan-200',
+  'bg-orange-100 text-orange-700 border-orange-200',
+  'bg-indigo-100 text-indigo-700 border-indigo-200',
 ]
 
 function getAvatarColor(name = '') {
@@ -21,46 +22,254 @@ function getAvatarColor(name = '') {
   return LECTURER_COLORS[Math.abs(hash) % LECTURER_COLORS.length]
 }
 
+// ── Search-ahead component ───────────────────────────────────────────────────
+function LecturerSearch({ unaddedLecturers, onAdd }) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const ref = useRef()
+
+  const results = useMemo(() => {
+    const q = query.toLowerCase().trim()
+    if (!q) return []
+    return unaddedLecturers.filter(l =>
+      l.name.toLowerCase().includes(q) ||
+      (l.lecturer_id || '').toLowerCase().includes(q)
+    ).slice(0, 8)
+  }, [query, unaddedLecturers])
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
+
+  const pick = (lecturer) => {
+    onAdd(lecturer.id)
+    setQuery('')
+    setOpen(false)
+  }
+
+  return (
+    <div ref={ref} className="relative w-full sm:w-96">
+      <div className="flex items-center gap-3 rounded-2xl border-2 border-slate-200 bg-white px-4 py-3 shadow-sm transition-all focus-within:border-brand-500 focus-within:ring-4 focus-within:ring-brand-500/20">
+        <svg className="h-5 w-5 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+        </svg>
+        <input
+          type="text"
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder="Search lecturer by name or ID…"
+          className="flex-1 bg-transparent text-base font-medium text-slate-700 outline-none placeholder:text-slate-400 placeholder:font-normal"
+        />
+        {query && (
+          <button onClick={() => { setQuery(''); setOpen(false) }} className="text-slate-300 hover:text-slate-500 transition">
+            <Icon name="trash" className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {open && results.length > 0 && (
+        <ul className="absolute left-0 right-0 top-full z-30 mt-1.5 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+          {results.map(l => (
+            <li key={l.id}>
+              <button
+                onClick={() => pick(l)}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-brand-50 transition"
+              >
+                <div className={`grid h-8 w-8 shrink-0 place-items-center rounded-full border-2 text-xs font-black ${getAvatarColor(l.name)}`}>
+                  {l.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">{l.name}</p>
+                  <p className="text-[11px] text-slate-400">{l.lecturer_id}</p>
+                </div>
+                <span className="ml-auto rounded-lg bg-brand-600 px-2.5 py-1 text-[11px] font-bold text-white">Add</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {open && query.trim() && results.length === 0 && (
+        <div className="absolute left-0 right-0 top-full z-30 mt-1.5 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-400 shadow-xl">
+          No lecturers found for "<strong>{query}</strong>"
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Lecturer Card ────────────────────────────────────────────────────────────
+function LecturerCard({ lecturer, semesterSubjects, getSubjectLecturers, toggleSubjectForLecturer, removeLecturerFromSemester }) {
+  const [showPicker, setShowPicker] = useState(false)
+  const colorStyle = getAvatarColor(lecturer.name)
+  const initial = lecturer.name.charAt(0).toUpperCase()
+
+  const assignedSubjects = semesterSubjects.filter(sub =>
+    getSubjectLecturers(sub.id).some(l => l.id === lecturer.id)
+  )
+  const unassignedSubjects = semesterSubjects.filter(sub =>
+    !getSubjectLecturers(sub.id).some(l => l.id === lecturer.id)
+  )
+
+  return (
+    <div className="flex flex-col rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md">
+      {/* Card Header */}
+      <div className="flex items-start justify-between gap-3 mb-5">
+        <div className="flex items-center gap-3.5">
+          <div className={`grid h-12 w-12 shrink-0 place-items-center rounded-full border-4 text-lg font-black ${colorStyle}`}>
+            {initial}
+          </div>
+          <div>
+            <p className="text-base font-bold text-slate-900">{lecturer.name}</p>
+            <p className="text-xs text-slate-400 mt-0.5 font-medium">
+              {lecturer.lecturer_id} · {lecturer.is_all_week ? 'All week' : (lecturer.available_days || []).join(', ')}
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => removeLecturerFromSemester(lecturer.id)}
+          className="rounded-xl p-2 text-slate-300 hover:bg-rose-50 hover:text-rose-500 transition"
+          title="Remove from semester"
+        >
+          <Icon name="trash" className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Assigned Subjects */}
+      <div className="flex-1 flex flex-col space-y-3">
+        {assignedSubjects.length === 0 ? (
+          <div className="flex-1 rounded-2xl border border-dashed border-slate-200 flex items-center justify-center p-4">
+            <p className="text-xs italic text-slate-400">No subjects assigned yet</p>
+          </div>
+        ) : (
+          assignedSubjects.map(sub => (
+            <div
+              key={sub.id}
+              className="group flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 transition hover:border-indigo-300 hover:shadow-sm"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="font-mono text-xs font-bold text-indigo-600 bg-indigo-50/80 rounded-lg px-2 py-1 shrink-0">{sub.code}</span>
+                <span className="text-sm font-semibold text-slate-700 truncate">{sub.name}</span>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="text-xs font-bold text-slate-400">{sub.total_hours}h</span>
+                <button
+                  onClick={() => toggleSubjectForLecturer(lecturer.id, sub.id)}
+                  className="rounded-lg p-1.5 text-slate-300 opacity-0 group-hover:opacity-100 hover:bg-rose-50 hover:text-rose-500 transition"
+                  title="Unassign subject"
+                >
+                  <Icon name="trash" className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+
+        {/* Assign Subject Picker */}
+        {showPicker && unassignedSubjects.length > 0 && (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2 space-y-1 mt-1 shadow-inner">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-2 pb-1">Pick a subject to assign:</p>
+            {unassignedSubjects.map(sub => (
+              <button
+                key={sub.id}
+                onClick={() => { toggleSubjectForLecturer(lecturer.id, sub.id); setShowPicker(false) }}
+                className="flex w-full items-center justify-between gap-2 rounded-xl border border-transparent hover:border-slate-200 bg-transparent hover:bg-white px-3 py-2 text-left transition shadow-sm hover:shadow"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="font-mono text-[10px] font-bold text-indigo-500 shrink-0">{sub.code}</span>
+                  <span className="text-xs font-semibold text-slate-700 truncate">{sub.name}</span>
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 shrink-0">{sub.total_hours}h</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Footer buttons */}
+        <div className="mt-auto pt-3 flex items-center justify-between gap-2">
+          {unassignedSubjects.length > 0 ? (
+            <button
+              onClick={() => setShowPicker(v => !v)}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 hover:border-slate-400 transition shadow-sm"
+            >
+              <Icon name="plus" className="h-4 w-4" />
+              {showPicker ? 'Cancel' : 'Assign Subject'}
+            </button>
+          ) : assignedSubjects.length > 0 ? (
+            <span className="text-xs text-emerald-600 font-semibold px-2">✅ All subjects assigned</span>
+          ) : <div />}
+
+          {assignedSubjects.length > 0 && (
+            <span className="rounded-xl border border-brand-200 bg-brand-50 px-3 py-1.5 text-[11px] font-bold text-brand-700 shadow-sm">
+              {assignedSubjects.length} subject{assignedSubjects.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Page ────────────────────────────────────────────────────────────────
 export function SemesterDetail() {
-  const { code } = useParams()
+  const { id } = useParams()
   const navigate = useNavigate()
-  const { 
-    semesters, subjects, lecturers, setModal, remove, 
-    assignLecturersToSubject, getSubjectLecturers, isLecturerQualified 
+  const {
+    semesters, subjects, lecturers, setModal, remove,
+    assignLecturersToSubject, getSubjectLecturers
   } = useOutletContext()
 
-  const semester = useMemo(() => semesters.find(s => s.code === code), [semesters, code])
+  const semester = useMemo(() => semesters.find(s => s.id === id), [semesters, id])
   const semesterSubjects = useMemo(() => subjects.filter(s => s.semester_id === semester?.id), [subjects, semester])
 
-  // Total metrics for top stats bar
   const totalHours = useMemo(() => semesterSubjects.reduce((sum, s) => sum + s.total_hours, 0), [semesterSubjects])
   const totalTheory = useMemo(() => semesterSubjects.reduce((sum, s) => sum + s.theory_hours, 0), [semesterSubjects])
   const totalLab = useMemo(() => semesterSubjects.reduce((sum, s) => sum + s.lab_hours, 0), [semesterSubjects])
 
-  // Lecturers assigned to at least one subject in THIS semester
-  const semesterLecturers = useMemo(() => {
-    const ids = new Set()
+  // ── Teaching Staff ──────────────────────────────────────────────────────────
+  const staffKey = `semester_staff_${id}`
+  const [staffIds, setStaffIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(staffKey) || '[]') }
+    catch { return [] }
+  })
+
+  const saveStaff = (ids) => {
+    setStaffIds(ids)
+    localStorage.setItem(staffKey, JSON.stringify(ids))
+  }
+
+  const addLecturerToSemester = (lecturerId) => {
+    if (!lecturerId || staffIds.includes(lecturerId)) return
+    saveStaff([...staffIds, lecturerId])
+  }
+
+  const removeLecturerFromSemester = (lecturerId) => {
     semesterSubjects.forEach(sub => {
-      getSubjectLecturers(sub.id).forEach(l => ids.add(l.id))
+      const current = getSubjectLecturers(sub.id).map(l => l.id)
+      if (current.includes(lecturerId)) {
+        assignLecturersToSubject(sub.id, current.filter(id => id !== lecturerId))
+      }
     })
-    return lecturers.filter(l => ids.has(l.id))
-  }, [semesterSubjects, lecturers, getSubjectLecturers])
+    saveStaff(staffIds.filter(id => id !== lecturerId))
+  }
 
-  if (!semester) return <div className="p-8 text-center text-slate-500">Semester not found</div>
-
-  const handleAddLecturer = (subjectId, lecturerId) => {
-    if (!lecturerId) return
-    const current = getSubjectLecturers(subjectId).map(l => l.id)
-    if (!current.includes(lecturerId)) {
-      assignLecturersToSubject(subjectId, [...current, lecturerId])
+  const toggleSubjectForLecturer = (lecturerId, subjectId) => {
+    const currentLecturers = getSubjectLecturers(subjectId).map(l => l.id)
+    if (currentLecturers.includes(lecturerId)) {
+      assignLecturersToSubject(subjectId, currentLecturers.filter(id => id !== lecturerId))
+    } else {
+      assignLecturersToSubject(subjectId, [...currentLecturers, lecturerId])
     }
   }
 
-  const handleRemoveLecturer = (subjectId, lecturerId) => {
-    const current = getSubjectLecturers(subjectId).map(l => l.id)
-    const updated = current.filter(id => id !== lecturerId)
-    assignLecturersToSubject(subjectId, updated)
-  }
+  const staffLecturers = useMemo(() => lecturers.filter(l => staffIds.includes(l.id)), [lecturers, staffIds])
+  const unaddedLecturers = useMemo(() => lecturers.filter(l => !staffIds.includes(l.id)), [lecturers, staffIds])
+
+  if (!semester) return <div className="p-8 text-center text-slate-500">Semester not found</div>
 
   return (
     <section className="space-y-6">
@@ -68,26 +277,21 @@ export function SemesterDetail() {
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-brand-950 via-brand-900 to-indigo-950 p-6 text-white shadow-xl sm:p-8">
         <div className="absolute -right-10 -top-10 h-44 w-44 rounded-full bg-brand-500/20 blur-3xl" />
         <div className="absolute -bottom-10 right-20 h-44 w-44 rounded-full bg-cyan-500/20 blur-3xl" />
-        
+
         <div className="relative z-10 flex flex-col justify-between gap-6 sm:flex-row sm:items-center">
           <div>
-            <button 
-              onClick={() => navigate('/semesters')} 
+            <button
+              onClick={() => navigate('/semesters')}
               className="mb-3 inline-flex items-center gap-2 rounded-xl bg-white/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 backdrop-blur-md transition hover:bg-white/20 hover:text-white"
             >
               <Icon name="back" className="h-3.5 w-3.5" /> All Semesters
             </button>
-            <div className="flex items-center gap-3">
-              <span className="rounded-xl bg-cyan-400/20 px-3 py-1 text-xs font-bold tracking-wide text-cyan-200 border border-cyan-400/30">
-                {semester.code}
-              </span>
-              <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">{semester.name}</h1>
-            </div>
+            <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">{semester.name}</h1>
           </div>
 
-          <button 
-            onClick={() => setModal({ type: 'subject', data: blankSubject, semester: semester })} 
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-brand-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/30 transition hover:scale-[1.02] hover:shadow-cyan-500/40 active:scale-[0.98]"
+          <button
+            onClick={() => setModal({ type: 'subject', data: blankSubject, semester })}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-brand-500 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-cyan-500/30 transition hover:scale-[1.02] active:scale-[0.98]"
           >
             <Icon name="plus" className="h-4 w-4" /> Add Subject
           </button>
@@ -108,27 +312,27 @@ export function SemesterDetail() {
             <p className="text-xl font-bold text-white mt-0.5">{totalTheory}h / {totalLab}h</p>
           </div>
           <div className="rounded-xl bg-white/5 p-3 backdrop-blur-sm border border-white/10">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-cyan-200/70">Lecturers Assigned</p>
-            <p className="text-xl font-bold text-cyan-300 mt-0.5">{semesterLecturers.length} This Semester</p>
+            <p className="text-[11px] font-medium uppercase tracking-wider text-cyan-200/70">Teaching Staff</p>
+            <p className="text-xl font-bold text-cyan-300 mt-0.5">{staffLecturers.length} Assigned</p>
           </div>
         </div>
       </div>
-      
-      {/* Main Subjects Table Card */}
+
+      {/* ── Subjects Table ── */}
       <div className="overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-xl shadow-slate-200/50">
         <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/80 px-6 py-4">
           <div>
-            <h2 className="text-base font-bold text-brand-950">Curriculum & Lecturer Assignments</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Assign one or more lecturers to each subject. Dropdowns show qualified lecturers who teach each course first.</p>
+            <h2 className="text-base font-bold text-brand-950">Curriculum</h2>
+            <p className="text-xs text-slate-500 mt-0.5">All subjects in this semester with their hours.</p>
           </div>
           <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 border border-brand-100">
-            {semesterSubjects.length} Subject{semesterSubjects.length === 1 ? '' : 's'}
+            {semesterSubjects.length} Subject{semesterSubjects.length !== 1 ? 's' : ''}
           </span>
         </div>
-        
+
         {semesterSubjects.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-left text-sm border-collapse">
+            <table className="w-full text-left text-sm border-collapse">
               <thead>
                 <tr className="bg-gradient-to-r from-slate-900 via-brand-950 to-slate-900 text-xs uppercase tracking-wider text-slate-300">
                   <th className="px-6 py-4 font-bold">Code</th>
@@ -136,144 +340,62 @@ export function SemesterDetail() {
                   <th className="px-5 py-4 font-bold text-center">Theory</th>
                   <th className="px-5 py-4 font-bold text-center">Lab</th>
                   <th className="px-5 py-4 font-bold text-center">Total</th>
-                  <th className="px-6 py-4 font-bold min-w-[320px]">Assigned Lecturers</th>
+                  <th className="px-6 py-4 font-bold">Assigned Lecturers</th>
                   <th className="px-6 py-4 font-bold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {semesterSubjects.map((subject) => {
                   const assignedLecturers = getSubjectLecturers(subject.id)
-                  const assignedLecturerIds = assignedLecturers.map(l => l.id)
-                  const unassignedLecturers = lecturers.filter(l => !assignedLecturerIds.includes(l.id))
-
-                  // Strictly filter to ONLY lecturers qualified to teach this subject
-                  const qualifiedLecturers = unassignedLecturers.filter(l => isLecturerQualified ? isLecturerQualified(l, subject) : true)
-
                   return (
                     <tr key={subject.id} className="group transition-colors hover:bg-cyan-50/30">
-                      {/* Code */}
-                      <td className="px-6 py-5">
+                      <td className="px-6 py-4">
                         <span className="inline-block rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 px-3 py-1 font-mono text-xs font-bold text-white shadow-xs">
                           {subject.code}
                         </span>
                       </td>
-
-                      {/* Name */}
-                      <td className="px-6 py-5">
-                        <p className="font-bold text-slate-900 group-hover:text-brand-700 transition-colors">{subject.name}</p>
-                        <p className="text-[11px] text-slate-400 mt-0.5">{subject.total_hours} Hours total course</p>
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-900">{subject.name}</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{subject.total_hours} hrs total</p>
                       </td>
-
-                      {/* Theory */}
-                      <td className="px-5 py-5 text-center">
+                      <td className="px-5 py-4 text-center">
                         <span className="inline-block rounded-lg border border-indigo-200/80 bg-indigo-50/70 px-2.5 py-1 text-xs font-semibold text-indigo-700">
                           {subject.theory_hours}h
                         </span>
                       </td>
-
-                      {/* Lab */}
-                      <td className="px-5 py-5 text-center">
+                      <td className="px-5 py-4 text-center">
                         {subject.lab_hours > 0 ? (
                           <span className="inline-block rounded-lg border border-amber-200/80 bg-amber-50/70 px-2.5 py-1 text-xs font-semibold text-amber-700">
                             {subject.lab_hours}h
                           </span>
                         ) : (
-                          <span className="text-slate-300 font-medium">—</span>
+                          <span className="text-slate-300">—</span>
                         )}
                       </td>
-
-                      {/* Total */}
-                      <td className="px-5 py-5 text-center">
-                        <span className="inline-block rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800 shadow-xs">
+                      <td className="px-5 py-4 text-center">
+                        <span className="inline-block rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-800">
                           {subject.total_hours}h
                         </span>
                       </td>
-
-                      {/* Multi-lecturer assigned pills + Add selector */}
-                      <td className="px-6 py-5">
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {assignedLecturers.length > 0 ? (
-                              assignedLecturers.map((l) => {
-                                const colorStyle = getAvatarColor(l.name)
-                                const initial = l.name.charAt(0).toUpperCase()
-                                return (
-                                  <div 
-                                    key={l.id} 
-                                    className={`group/badge inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold shadow-xs transition hover:shadow-md ${colorStyle}`}
-                                  >
-                                    <span className="grid h-4 w-4 place-items-center rounded-full bg-white/70 text-[10px] font-bold">
-                                      {initial}
-                                    </span>
-                                    <span>{l.name}</span>
-                                    <button 
-                                      onClick={() => handleRemoveLecturer(subject.id, l.id)}
-                                      className="ml-0.5 rounded-full p-0.5 hover:bg-rose-100 hover:text-rose-700 transition"
-                                      title="Unassign this lecturer"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                )
-                              })
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1 rounded-full">
-                                ⚪ Unassigned (0 Lecturers)
+                      <td className="px-6 py-4">
+                        <div className="flex flex-wrap gap-1.5">
+                          {assignedLecturers.length > 0 ? (
+                            assignedLecturers.map(l => (
+                              <span key={l.id} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${getAvatarColor(l.name)}`}>
+                                {l.name.split(' ')[0]}
                               </span>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <select
-                              value=""
-                              onChange={(e) => handleAddLecturer(subject.id, e.target.value)}
-                              className="w-full max-w-[250px] rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-600/10 hover:border-slate-300"
-                            >
-                              <option value="">+ Assign Qualified Lecturer...</option>
-                              {qualifiedLecturers.length > 0 ? (
-                                qualifiedLecturers.map(l => (
-                                  <option key={l.id} value={l.id}>{l.name}</option>
-                                ))
-                              ) : (
-                                <option disabled value="">No qualified lecturers registered for this subject</option>
-                              )}
-                            </select>
-                            
-                            {assignedLecturers.length > 0 && (
-                              <button
-                                onClick={() => assignLecturersToSubject(subject.id, [])}
-                                className="text-[11px] font-semibold text-rose-600 hover:text-rose-800 hover:underline px-1 py-0.5"
-                                title="Clear all assigned lecturers and leave subject unassigned"
-                              >
-                                Clear All
-                              </button>
-                            )}
-
-                            {assignedLecturers.length > 1 && (
-                              <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100">
-                                Multi ({assignedLecturers.length})
-                              </span>
-                            )}
-                          </div>
+                            ))
+                          ) : (
+                            <span className="text-xs italic text-slate-400">Not assigned yet</span>
+                          )}
                         </div>
                       </td>
-
-                      {/* Actions */}
-
-                      <td className="px-6 py-5 text-right">
-                        <div className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white p-1 shadow-xs">
-                          <button 
-                            onClick={() => setModal({ type: 'subject', data: subject, semester: semester })} 
-                            className="rounded-lg p-2 text-slate-600 transition hover:bg-cyan-50 hover:text-brand-600" 
-                            title="Edit subject"
-                          >
+                      <td className="px-6 py-4 text-right">
+                        <div className="inline-flex items-center gap-1 rounded-xl border border-slate-200/80 bg-white p-1 shadow-xs">
+                          <button onClick={() => setModal({ type: 'subject', data: subject, semester })} className="rounded-lg p-2 text-slate-600 hover:bg-cyan-50 hover:text-brand-600" title="Edit">
                             <Icon name="edit" className="h-4 w-4" />
                           </button>
-                          <button 
-                            onClick={() => remove('subjects', subject.id)} 
-                            className="rounded-lg p-2 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600" 
-                            title="Delete subject"
-                          >
+                          <button onClick={() => remove('subjects', subject.id)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600" title="Delete">
                             <Icon name="trash" className="h-4 w-4" />
                           </button>
                         </div>
@@ -285,11 +407,41 @@ export function SemesterDetail() {
             </table>
           </div>
         ) : (
-          <Empty title="No subjects in this semester" text="Use Add Subject to start building this semester's curriculum." />
+          <Empty title="No subjects yet" text="Use Add Subject to start building this semester's curriculum." />
+        )}
+      </div>
+
+      {/* ── Teaching Staff Section ── */}
+      <div className="overflow-hidden rounded-3xl border border-slate-200/80 bg-white shadow-xl shadow-slate-200/50">
+        <div className="flex flex-col gap-4 border-b border-slate-100 bg-slate-50/80 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-bold text-brand-950">Teaching Staff</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Search and add lecturers, then assign their subjects.</p>
+          </div>
+          <LecturerSearch unaddedLecturers={unaddedLecturers} onAdd={addLecturerToSemester} />
+        </div>
+
+        {staffLecturers.length === 0 ? (
+          <div className="px-6 py-14 text-center">
+            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-2xl">👤</div>
+            <p className="font-semibold text-slate-700">No lecturers assigned yet</p>
+            <p className="mt-1 text-sm text-slate-400">Search for a lecturer by name or ID above to get started.</p>
+          </div>
+        ) : (
+          <div className="grid gap-4 p-6 sm:grid-cols-2 xl:grid-cols-3">
+            {staffLecturers.map(lecturer => (
+              <LecturerCard
+                key={lecturer.id}
+                lecturer={lecturer}
+                semesterSubjects={semesterSubjects}
+                getSubjectLecturers={getSubjectLecturers}
+                toggleSubjectForLecturer={toggleSubjectForLecturer}
+                removeLecturerFromSemester={removeLecturerFromSemester}
+              />
+            ))}
+          </div>
         )}
       </div>
     </section>
   )
 }
-
-

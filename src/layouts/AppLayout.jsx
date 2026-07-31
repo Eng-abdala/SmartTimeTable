@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import facultyLogo from '../assets/logo.png'
 import { Icon } from '../components/Icon'
@@ -15,6 +15,7 @@ export function AppLayout() {
   const [modal, setModal] = useState(null)
   
   const location = useLocation()
+  const navigate = useNavigate()
 
   const loadData = async () => {
     setLoading(true)
@@ -192,6 +193,15 @@ export function AppLayout() {
       </aside>
 
       <main className="min-w-0 flex-1 p-5 sm:p-8">
+        {location.pathname !== '/' && (
+          <button 
+            onClick={() => navigate(-1)} 
+            className="mb-6 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50 hover:text-brand-600 transition shadow-sm border border-slate-200 hover:border-brand-200"
+          >
+            <Icon name="back" className="h-4 w-4" /> Go Back
+          </button>
+        )}
+
         {notice && (
           <div className="mb-5 flex items-center justify-between rounded-xl border border-brand-600/20 bg-cyan-50 px-4 py-3 text-sm text-brand-800">
             <span>{notice}</span>

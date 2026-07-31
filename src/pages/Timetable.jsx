@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useRef } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import React, { useState, useMemo, useRef, useEffect } from 'react'
+import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import html2pdf from 'html2pdf.js'
@@ -34,21 +34,32 @@ const COLORS = [
   'bg-indigo-50 border-indigo-200 text-indigo-900',
 ]
 
-function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers) {
+function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap) {
   // ── Step 1: Assign lecturers to subjects for this specific class ──────────
   // Constraint: one lecturer → one subject per class (no lecturer teaches two subjects to the same class)
   const usedLecturerIds = new Set()        // lecturers already committed to a subject for this class
   const subjectLecturerMap = new Map()     // subjectId → lecturer object
 
-  for (const sub of semesterSubjects) {
-    // Get all qualified lecturers for this subject
-    const qualifiedForSubject = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
+  // Constraint 2: A lecturer can only teach a maximum of 3 different classes overall.
+  const availableLecturers = lecturers.filter(l => {
+    const classCount = classCountMap && classCountMap[l.id] ? classCountMap[l.id].size : 0
+    // If they already teach 3 classes, they can only be picked if this class is already one of them
+    return classCount < 3 || (classCountMap && classCountMap[l.id]?.has(selectedClassId))
+  })
 
-    // Try the preferred random pick first, then cycle through qualified, then fall back to anyone
+  for (const sub of semesterSubjects) {
+    // Get all qualified lecturers for this subject, filtered by max class limit
+    const allQualified = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
+    const qualifiedForSubject = allQualified.filter(l => availableLecturers.some(a => a.id === l.id))
+
+    // Try the preferred random pick first, then cycle through other qualified lecturers
     const preferred = getRandomLecturerForClass ? getRandomLecturerForClass(sub.id, selectedClassId) : null
-    const candidates = preferred
-      ? [preferred, ...qualifiedForSubject.filter(l => l.id !== preferred.id), ...lecturers.filter(l => !qualifiedForSubject.some(q => q.id === l.id) && l.id !== preferred?.id)]
-      : [...qualifiedForSubject, ...lecturers.filter(l => !qualifiedForSubject.some(q => q.id === l.id))]
+    const preferredIfAvailable = preferred && availableLecturers.some(a => a.id === preferred.id) ? preferred : null
+
+    // STRICT ASSIGNMENT: Only use lecturers explicitly assigned to this subject
+    const candidates = preferredIfAvailable
+      ? [preferredIfAvailable, ...qualifiedForSubject.filter(l => l.id !== preferredIfAvailable.id)]
+      : [...qualifiedForSubject]
 
     // Pick the first candidate not already used for another subject in this class
     const assigned = candidates.find(l => l && !usedLecturerIds.has(l.id)) || null
@@ -76,12 +87,31 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
     }
   })
 
+  // Ensure all Theory blocks are placed before Lab blocks, but shuffle within those groups to allow regeneration
+  const shuffle = (array) => {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+  
+  const theoryBlocks = blocks.filter(b => b.type === 'Theory')
+  const labBlocks = blocks.filter(b => b.type === 'Lab')
+  
+  shuffle(theoryBlocks)
+  shuffle(labBlocks)
+  
+  const shuffledBlocks = [...theoryBlocks, ...labBlocks]
+
+  // Clone dailyLoad to track during generation
+  const localDailyLoad = initialDailyLoad ? JSON.parse(JSON.stringify(initialDailyLoad)) : {}
+
   // ── Step 3: Spread blocks across days ────────────────────────────────────
   const timetable = {}
   DAYS.forEach(d => { timetable[d] = [] })
   const daySlotCount = { Saturday: 0, Sunday: 0, Monday: 0, Tuesday: 0, Wednesday: 0 }
 
-  const totalPeriods = blocks.reduce((sum, b) => sum + b.size, 0)
+  const totalPeriods = shuffledBlocks.reduce((sum, b) => sum + b.size, 0)
   const baseMax = Math.ceil(totalPeriods / 5)
 
   const getMaxSlots = (day) => {
@@ -90,36 +120,55 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
     return m
   }
 
+  // Track when the first Theory lesson is placed so Lab lessons don't happen earlier in the week
+  const theoryDayIdxMap = {} // subject.id -> earliest chronological day index (0-4)
+
   // Simple round-robin to spread blocks evenly across the week
-  let dayIdx = 0
-  for (const block of blocks) {
+  let dayIdx = Math.floor(Math.random() * DAYS.length) // Start on a random day for more variety
+
+  for (const block of shuffledBlocks) {
     let placed = false
     const startDayIdx = dayIdx
 
     do {
       const day = DAYS[dayIdx]
+      
+      // Check if we have enough slots on this day
       if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
-        for (let i = 0; i < block.size; i++) {
-          timetable[day].push({
-            slotIndex: daySlotCount[day],
-            subject: block.subject,
-            type: block.type,
-            lecturer: block.lecturer
-          })
-          daySlotCount[day]++
+        
+        // --- CLASH CHECK ---
+        // Verify the lecturer isn't busy in ANY of the slots we're about to use
+        let hasClash = false
+        if (block.lecturer) {
+          const lid = block.lecturer.id
+          
+          // Check Daily Load Limit (Max 3 slots per day across all shifts)
+          if ((localDailyLoad[lid]?.[day] || 0) + block.size > 3) {
+            hasClash = true
+          }
+          
+          if (!hasClash && busyMap[lid]) {
+            for (let i = 0; i < block.size; i++) {
+              const slotIndex = daySlotCount[day] + i
+              if (busyMap[lid][day] && busyMap[lid][day][slotIndex]) {
+                hasClash = true
+                break
+              }
+            }
+          }
         }
-        placed = true
-        dayIdx = (dayIdx + 1) % DAYS.length
-        break
-      }
-      dayIdx = (dayIdx + 1) % DAYS.length
-    } while (dayIdx !== startDayIdx)
+        
+        // --- CHRONOLOGICAL CHECK FOR LABS ---
+        // Ensure Lab doesn't happen on a day earlier than the first Theory lesson
+        const chronoDayIdx = DAYS.indexOf(day)
+        if (!hasClash && block.type === 'Lab' && theoryDayIdxMap[block.subject.id] !== undefined) {
+          if (chronoDayIdx < theoryDayIdxMap[block.subject.id]) {
+            hasClash = true
+          }
+        }
 
-    // Fallback: dump wherever there's space
-    if (!placed) {
-      for (let i = 0; i < block.size; i++) {
-        for (const day of DAYS) {
-          if (daySlotCount[day] < getMaxSlots(day)) {
+        if (!hasClash) {
+          for (let i = 0; i < block.size; i++) {
             timetable[day].push({
               slotIndex: daySlotCount[day],
               subject: block.subject,
@@ -127,7 +176,99 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
               lecturer: block.lecturer
             })
             daySlotCount[day]++
+          }
+          
+          if (block.lecturer) {
+            const lid = block.lecturer.id
+            if (!localDailyLoad[lid]) localDailyLoad[lid] = {}
+            localDailyLoad[lid][day] = (localDailyLoad[lid][day] || 0) + block.size
+          }
+          
+          if (block.type === 'Theory') {
+            if (theoryDayIdxMap[block.subject.id] === undefined) {
+              theoryDayIdxMap[block.subject.id] = chronoDayIdx
+            } else {
+              theoryDayIdxMap[block.subject.id] = Math.min(theoryDayIdxMap[block.subject.id], chronoDayIdx)
+            }
+          }
+          
+          placed = true
+          dayIdx = (dayIdx + 1) % DAYS.length
+          break
+        }
+      }
+      dayIdx = (dayIdx + 1) % DAYS.length
+    } while (dayIdx !== startDayIdx)
+
+    // Fallback: dump wherever there's space (but still try to avoid clashes)
+    if (!placed) {
+      for (let i = 0; i < block.size; i++) {
+        let fallbackPlaced = false
+        for (const day of DAYS) {
+          const slotIndex = daySlotCount[day]
+          if (slotIndex < getMaxSlots(day)) {
+            // Check clash and load limit
+            if (block.lecturer) {
+              const lid = block.lecturer.id
+              if ((localDailyLoad[lid]?.[day] || 0) + 1 > 3) {
+                continue // Exceeds daily load limit
+              }
+              if (busyMap[lid] && busyMap[lid][day] && busyMap[lid][day][slotIndex]) {
+                continue // Clash, try next day
+              }
+            }
+
+            timetable[day].push({
+              slotIndex,
+              subject: block.subject,
+              type: block.type,
+              lecturer: block.lecturer
+            })
+            daySlotCount[day]++
+            
+            if (block.lecturer) {
+              const lid = block.lecturer.id
+              if (!localDailyLoad[lid]) localDailyLoad[lid] = {}
+              localDailyLoad[lid][day] = (localDailyLoad[lid][day] || 0) + 1
+            }
+            
+            const chronoDayIdxFallback = DAYS.indexOf(day)
+            if (block.type === 'Theory') {
+              if (theoryDayIdxMap[block.subject.id] === undefined) {
+                theoryDayIdxMap[block.subject.id] = chronoDayIdxFallback
+              } else {
+                theoryDayIdxMap[block.subject.id] = Math.min(theoryDayIdxMap[block.subject.id], chronoDayIdxFallback)
+              }
+            }
+            
+            fallbackPlaced = true
             break
+          }
+        }
+        
+        // If absolutely nowhere to put it without clashing, just force it in the first day with space 
+        // (This is an unsolvable clash, will require manual fix)
+        if (!fallbackPlaced) {
+          for (const day of DAYS) {
+             if (daySlotCount[day] < getMaxSlots(day)) {
+                timetable[day].push({
+                  slotIndex: daySlotCount[day],
+                  subject: block.subject,
+                  type: block.type,
+                  lecturer: block.lecturer
+                })
+                daySlotCount[day]++
+                
+                const chronoDayIdxForce = DAYS.indexOf(day)
+                if (block.type === 'Theory') {
+                  if (theoryDayIdxMap[block.subject.id] === undefined) {
+                    theoryDayIdxMap[block.subject.id] = chronoDayIdxForce
+                  } else {
+                    theoryDayIdxMap[block.subject.id] = Math.min(theoryDayIdxMap[block.subject.id], chronoDayIdxForce)
+                  }
+                }
+                break
+             }
           }
         }
       }
@@ -139,36 +280,54 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
 
 
 export function Timetable() {
-  const { classes, semesters, subjects, lecturers, getRandomLecturerForClass, getSubjectLecturers } = useOutletContext()
+  const { classes, semesters, subjects, lecturers, getRandomLecturerForClass, getSubjectLecturers, setNotice } = useOutletContext()
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlClassId = searchParams.get('classId')
 
   const [selectedYear, setSelectedYear] = useState(() => localStorage.getItem('tt_year') || '')
   const [selectedSemesterId, setSelectedSemesterId] = useState(() => localStorage.getItem('tt_semester') || '')
-  const [selectedClassId, setSelectedClassId] = useState(() => localStorage.getItem('tt_class') || '')
-  const [timetable, setTimetable] = useState(() => {
-    try { 
-      const parsed = JSON.parse(localStorage.getItem('tt_grid') || 'null') 
-      if (parsed && parsed['Saturday'] && !Array.isArray(parsed['Saturday'])) {
-        localStorage.removeItem('tt_grid')
-        return null
-      }
-      return parsed
-    } catch { return null }
-  })
-  const [generated, setGenerated] = useState(() => {
-    try { 
-      const parsed = JSON.parse(localStorage.getItem('tt_grid') || 'null') 
-      if (parsed && parsed['Saturday'] && !Array.isArray(parsed['Saturday'])) {
-        return false
-      }
-      return !!parsed
-    } catch { return false }
-  })
+  const [selectedClassId, setSelectedClassId] = useState(() => urlClassId || localStorage.getItem('tt_class') || '')
+  const [timetable, setTimetable] = useState(null)
+  const [generated, setGenerated] = useState(false)
+  const [isSaved, setIsSaved] = useState(false)
+  
   const printRef = useRef()
+
+  // Load timetable on mount if URL has classId
+  useEffect(() => {
+    if (urlClassId) {
+      const savedGrid = localStorage.getItem(`saved_tt_${urlClassId}`)
+      if (savedGrid) {
+        try {
+          const parsed = JSON.parse(savedGrid)
+          if (parsed && Array.isArray(parsed['Saturday'])) {
+            setTimetable(parsed)
+            setGenerated(true)
+            setIsSaved(true)
+            setSelectedClassId(urlClassId)
+            
+            // Auto-select year/semester if possible based on class
+            const targetClass = classes.find(c => c.id === urlClassId)
+            if (targetClass) {
+              setSelectedYear(targetClass.intake_year.toString())
+              // We'll leave semester alone as we don't know it just from the grid, 
+              // but they can see the timetable immediately.
+            }
+          }
+        } catch {}
+      }
+    }
+  }, [urlClassId, classes])
 
   // Persist selections to localStorage whenever they change
   const saveYear = (v) => { setSelectedYear(v); localStorage.setItem('tt_year', v) }
   const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v) }
-  const saveClass = (v) => { setSelectedClassId(v); localStorage.setItem('tt_class', v) }
+  const saveClass = (v) => { 
+    setSelectedClassId(v); 
+    localStorage.setItem('tt_class', v);
+    setSearchParams({}); // clear URL param if they change class manually
+  }
 
   // Classes filtered by selected year
   const yearClasses = useMemo(() =>
@@ -196,16 +355,80 @@ export function Timetable() {
 
   const handleGenerate = () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
+
+    // Ensure all subjects have at least one lecturer assigned
+    const unassignedSubjects = semesterSubjects.filter(sub => {
+      const assigned = getSubjectLecturers(sub.id)
+      return !assigned || assigned.length === 0
+    })
+
+    if (unassignedSubjects.length > 0) {
+      const names = unassignedSubjects.map(s => s.name).join(', ')
+      setNotice(`Cannot generate timetable. The following subjects have no assigned lecturer: ${names}`)
+      return
+    }
+
+    // Build busyMap from all OTHER saved timetables
+    const busyMap = {} // lecturerId -> day -> slotIndex -> true
+    const dailyLoad = {} // lecturerId -> day -> totalSlots
+    const classCountMap = {} // lecturerId -> Set of classIds
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key.startsWith('saved_tt_') && key !== `saved_tt_${selectedClassId}`) {
+        try {
+          const savedGrid = JSON.parse(localStorage.getItem(key))
+          const savedClassId = key.replace('saved_tt_', '')
+          const savedClass = classes.find(c => c.id === savedClassId)
+          
+          DAYS.forEach(day => {
+            if (savedGrid[day]) {
+              savedGrid[day].forEach(session => {
+                if (session.lecturer) {
+                  const lid = session.lecturer.id
+                  
+                  // Track class count
+                  if (!classCountMap[lid]) classCountMap[lid] = new Set()
+                  classCountMap[lid].add(savedClassId)
+
+                  // Track daily load REGARDLESS of shift (max 3 periods across whole day)
+                  if (!dailyLoad[lid]) dailyLoad[lid] = {}
+                  dailyLoad[lid][day] = (dailyLoad[lid][day] || 0) + 1
+
+                  // Only check physical time clashes against classes in the SAME SHIFT. 
+                  if (savedClass && savedClass.shift === selectedClass.shift) {
+                    if (!busyMap[lid]) busyMap[lid] = {}
+                    if (!busyMap[lid][day]) busyMap[lid][day] = {}
+                    busyMap[lid][day][session.slotIndex] = true
+                  }
+                }
+              })
+            }
+          })
+        } catch (e) {
+          console.error('Failed to parse saved timetable for clash detection', e)
+        }
+      }
+    }
+
     const grid = generateTimetable(
       semesterSubjects, lecturers, selectedClass.shift,
-      selectedClass.id, getRandomLecturerForClass, getSubjectLecturers
+      selectedClass.id, getRandomLecturerForClass, getSubjectLecturers, busyMap, dailyLoad, classCountMap
     )
     setTimetable(grid)
     setGenerated(true)
-    localStorage.setItem('tt_grid', JSON.stringify(grid))
+    setIsSaved(false)
+  }
+
+  const handleSaveTimetable = () => {
+    if (timetable && selectedClassId) {
+      localStorage.setItem(`saved_tt_${selectedClassId}`, JSON.stringify(timetable))
+      setIsSaved(true)
+    }
   }
 
   const handleReset = () => {
+    setSearchParams({}) // Clear URL params so it doesn't reload the saved class
     setSelectedYear(''); setSelectedSemesterId(''); setSelectedClassId('')
     setTimetable(null); setGenerated(false)
     localStorage.removeItem('tt_year'); localStorage.removeItem('tt_semester')
@@ -227,6 +450,26 @@ export function Timetable() {
       })
       .from(el)
       .save()
+  }
+
+  const handleGenerateAnother = () => {
+    setSearchParams({}) 
+    setSelectedClassId('')
+    setTimetable(null)
+    setGenerated(false)
+    setIsSaved(false)
+    localStorage.removeItem('tt_class')
+    localStorage.removeItem('tt_grid')
+  }
+
+  const handleDeleteSaved = () => {
+    if (selectedClassId) {
+      if (confirm('Are you sure you want to delete this saved timetable? This will allow lecturers to be scheduled in these slots again.')) {
+        localStorage.removeItem(`saved_tt_${selectedClassId}`)
+        handleGenerateAnother() // This conveniently resets the view
+        setNotice('Saved timetable deleted successfully.')
+      }
+    }
   }
 
   const shift = selectedClass?.shift || 'Morning'
@@ -256,11 +499,52 @@ export function Timetable() {
         </div>
         {generated && (
           <div className="flex flex-wrap gap-3">
-            <button onClick={handleReset} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50">
-              <Icon name="back" className="h-4 w-4" /> New Timetable
+            <button onClick={handleReset} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition">
+              <Icon name="back" className="h-4 w-4" /> Go Back
             </button>
+            
+            {!isSaved && (
+              <button 
+                onClick={handleGenerate} 
+                className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-100 hover:border-indigo-300"
+                title="Regenerate a new layout"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Shuffle Layout
+              </button>
+            )}
+
+            <button 
+              onClick={handleSaveTimetable} 
+              disabled={isSaved}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow-md transition ${isSaved ? 'bg-emerald-500 cursor-not-allowed' : 'bg-brand-600 hover:bg-brand-800'}`}
+            >
+              <span className="text-base">{isSaved ? '✓' : '💾'}</span> {isSaved ? 'Saved to Class' : 'Save Timetable'}
+            </button>
+            
+            {isSaved && (
+              <button 
+                onClick={handleGenerateAnother} 
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-indigo-800"
+              >
+                <Icon name="plus" className="h-4 w-4" /> Generate Another Class
+              </button>
+            )}
+
+            {isSaved && (
+              <button 
+                onClick={handleDeleteSaved} 
+                className="inline-flex items-center gap-2 rounded-xl bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-600 shadow-sm transition hover:bg-rose-100 border border-rose-200"
+                title="Delete this saved timetable"
+              >
+                <Icon name="trash" className="h-4 w-4" /> Delete Saved
+              </button>
+            )}
+
             <button onClick={handleDownloadPdf} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-rose-700">
-              <Icon name="print" className="h-4 w-4" /> Download PDF
+              <Icon name="print" className="h-4 w-4" /> PDF
             </button>
             <button onClick={handlePrint} className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-brand-800">
               <Icon name="print" className="h-4 w-4" /> Print
@@ -309,7 +593,7 @@ export function Timetable() {
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Semester —</option>
-                {semesters.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+                {semesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
 
@@ -326,7 +610,7 @@ export function Timetable() {
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Class —</option>
-                {yearClasses.map(c => <option key={c.id} value={c.id}>{c.name} ({c.code}) – {c.shift}</option>)}
+                {yearClasses.map(c => <option key={c.id} value={c.id}>{c.name} – {c.shift}</option>)}
               </select>
               {selectedYear && yearClasses.length === 0 && (
                 <p className="mt-1.5 text-xs text-rose-500">No classes found for intake year {selectedYear}.</p>

@@ -16,7 +16,7 @@ export function Lecturers() {
         </button>
       </header>
       <ManagerTable 
-        headers={['Lecturer ID', 'Name', 'Taught Subjects', 'Availability', 'Actions']} 
+        headers={['Lecturer ID', 'Name', 'Availability', 'Actions']} 
         rows={lecturers} 
         empty="No lecturers registered yet." 
         render={(person) => {
@@ -25,19 +25,7 @@ export function Lecturers() {
             <>
               <td className="px-6 py-4 font-semibold text-brand-600">{person.lecturer_id}</td>
               <td className="px-6 py-4 font-medium text-brand-950">{person.name}</td>
-              <td className="px-6 py-4">
-                <div className="flex flex-wrap gap-1.5 max-w-xs">
-                  {taught.length > 0 ? (
-                    taught.map(sub => (
-                      <span key={sub} className="inline-block rounded-md bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
-                        {sub}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-xs text-slate-400 italic">No subjects specified</span>
-                  )}
-                </div>
-              </td>
+
               <td className="px-6 py-4">
                 <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-brand-700">
                   {person.is_all_week ? 'Available all week' : person.available_days.join(', ')}

@@ -26,12 +26,11 @@ export function Semesters() {
             const items = subjects.filter((subject) => subject.semester_id === semester.id)
             const hours = items.reduce((sum, subject) => sum + subject.total_hours, 0)
             return (
-              <button onClick={() => navigate(`/semesters/${semester.code}`)} key={semester.id} className="group rounded-2xl border border-slate-100 bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg">
+              <button onClick={() => navigate(`/semesters/${semester.id}`)} key={semester.id} className="group rounded-2xl border border-slate-100 bg-white p-6 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg">
                 <div className="flex items-start justify-between">
-                  <span className="rounded-lg bg-cyan-50 px-3 py-1 text-xs font-bold text-brand-600">{semester.code}</span>
                   <span className="text-brand-500 transition group-hover:translate-x-1"><Icon name="arrow" /></span>
                 </div>
-                <h2 className="mt-6 text-xl font-bold text-brand-950">{semester.name}</h2>
+                <h2 className="mt-4 text-xl font-bold text-brand-950">{semester.name}</h2>
                 <div className="mt-5 flex border-t border-slate-100 pt-4 text-sm">
                   <span className="flex-1 text-slate-500"><b className="text-brand-950">{items.length}</b> subjects</span>
                   <span className="text-slate-500"><b className="text-brand-950">{hours}</b> total hrs</span>
