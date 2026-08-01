@@ -291,6 +291,7 @@ export function Timetable() {
   const [timetable, setTimetable] = useState(null)
   const [generated, setGenerated] = useState(false)
   const [isSaved, setIsSaved] = useState(false)
+  const [globalBusyMap, setGlobalBusyMap] = useState({})
   
   const printRef = useRef()
 
@@ -415,6 +416,7 @@ export function Timetable() {
       semesterSubjects, lecturers, selectedClass.shift,
       selectedClass.id, getRandomLecturerForClass, getSubjectLecturers, busyMap, dailyLoad, classCountMap
     )
+    setGlobalBusyMap(busyMap)
     setTimetable(grid)
     setGenerated(true)
     setIsSaved(false)
@@ -470,6 +472,40 @@ export function Timetable() {
         setNotice('Saved timetable deleted successfully.')
       }
     }
+  }
+
+  const getAvailableLecturersForSession = (subject, day, slotIndex, currentLecturerId) => {
+    const allQualified = getSubjectLecturers(subject.id) || []
+    return allQualified.filter(l => {
+      if (currentLecturerId === l.id) return true // always show current
+      
+      // Check global busy map (other classes)
+      if (globalBusyMap[l.id]?.[day]?.[slotIndex]) return false
+      
+      // Check current timetable (this class)
+      if (timetable && timetable[day]) {
+        const conflictInThisClass = timetable[day].some(session => 
+          session.slotIndex === slotIndex && 
+          session.lecturer && 
+          session.lecturer.id === l.id
+        )
+        if (conflictInThisClass) return false
+      }
+      
+      return true
+    })
+  }
+
+  const handleLecturerChange = (day, sessionIdx, newLecturerId) => {
+    const newTimetable = { ...timetable }
+    const session = newTimetable[day][sessionIdx]
+    if (newLecturerId) {
+      const lecturer = lecturers.find(l => l.id === newLecturerId)
+      session.lecturer = lecturer
+    } else {
+      session.lecturer = null
+    }
+    setTimetable(newTimetable)
   }
 
   const shift = selectedClass?.shift || 'Morning'
@@ -697,7 +733,20 @@ export function Timetable() {
                               {timeString}
                             </td>
                             <td className="border border-black px-3 py-1.5 align-middle">
-                              {session.lecturer ? session.lecturer.name : ''}
+                              {!isSaved && generated ? (
+                                <select 
+                                  value={session.lecturer ? session.lecturer.id : ''}
+                                  onChange={(e) => handleLecturerChange(day, idx, e.target.value)}
+                                  className="w-full bg-transparent outline-none border-b border-dashed border-slate-300 focus:border-brand-500 py-1"
+                                >
+                                  <option value="">-- No Lecturer --</option>
+                                  {getAvailableLecturersForSession(session.subject, day, session.slotIndex, session.lecturer?.id).map(l => (
+                                    <option key={l.id} value={l.id}>{l.name}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                session.lecturer ? session.lecturer.name : ''
+                              )}
                             </td>
                             <td className="border border-black px-3 py-1.5 text-center align-middle">
                               {session.type}

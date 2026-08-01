@@ -102,6 +102,76 @@ function LecturerSearch({ unaddedLecturers, onAdd }) {
   )
 }
 
+// ── Subject Assign Cell (for table) ──────────────────────────────────────────
+function SubjectAssignCell({ lecturer, assignedSubjects, unassignedSubjects, toggleSubjectForLecturer, colorStyle }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerRef = useRef()
+
+  // Close picker on outside click
+  useEffect(() => {
+    function handle(e) { if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false) }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {assignedSubjects.length > 0 ? (
+        assignedSubjects.map(sub => (
+          <button
+            key={sub.id}
+            onClick={() => toggleSubjectForLecturer(lecturer.id, sub.id)}
+            title={`Click to unassign ${sub.name}`}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-semibold transition hover:opacity-70 ${colorStyle}`}
+          >
+            {sub.name}
+            <span className="text-[10px] opacity-60">×</span>
+          </button>
+        ))
+      ) : (
+        <span className="text-xs italic text-slate-400">None assigned</span>
+      )}
+
+      {/* Add Subject button + dropdown */}
+      {unassignedSubjects.length > 0 && (
+        <div ref={pickerRef} className="relative">
+          <button
+            onClick={() => setPickerOpen(v => !v)}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-brand-300 bg-brand-50/50 px-2.5 py-0.5 text-xs font-semibold text-brand-600 transition hover:border-brand-500 hover:bg-brand-100"
+            title="Add subject"
+          >
+            <Icon name="plus" className="h-3 w-3" />
+            Add
+          </button>
+
+          {pickerOpen && (
+            <div className="absolute left-0 top-full z-40 mt-1.5 min-w-[220px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                Assign a subject
+              </p>
+              <ul className="max-h-48 overflow-y-auto py-1">
+                {unassignedSubjects.map(sub => (
+                  <li key={sub.id}>
+                    <button
+                      onClick={() => { toggleSubjectForLecturer(lecturer.id, sub.id); setPickerOpen(false) }}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition hover:bg-brand-50"
+                    >
+                      <span className="font-mono text-[10px] font-bold text-indigo-500 bg-indigo-50 rounded px-1.5 py-0.5 shrink-0">
+                        {sub.code}
+                      </span>
+                      <span className="font-medium text-slate-700 truncate">{sub.name}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Lecturer Card ────────────────────────────────────────────────────────────
 function LecturerCard({ lecturer, semesterSubjects, getSubjectLecturers, toggleSubjectForLecturer, removeLecturerFromSemester }) {
   const [showPicker, setShowPicker] = useState(false)
@@ -428,17 +498,74 @@ export function SemesterDetail() {
             <p className="mt-1 text-sm text-slate-400">Search for a lecturer by name or ID above to get started.</p>
           </div>
         ) : (
-          <div className="grid gap-4 p-6 sm:grid-cols-2 xl:grid-cols-3">
-            {staffLecturers.map(lecturer => (
-              <LecturerCard
-                key={lecturer.id}
-                lecturer={lecturer}
-                semesterSubjects={semesterSubjects}
-                getSubjectLecturers={getSubjectLecturers}
-                toggleSubjectForLecturer={toggleSubjectForLecturer}
-                removeLecturerFromSemester={removeLecturerFromSemester}
-              />
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm border-collapse">
+              <thead>
+                <tr className="bg-gradient-to-r from-slate-900 via-brand-950 to-slate-900 text-xs uppercase tracking-wider text-slate-300">
+                  <th className="px-6 py-4 font-bold">Lecturer</th>
+                  <th className="px-6 py-4 font-bold">ID</th>
+                  <th className="px-6 py-4 font-bold">Availability</th>
+                  <th className="px-6 py-4 font-bold">Assigned Subjects</th>
+                  <th className="px-6 py-4 font-bold text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {staffLecturers.map((lecturer) => {
+                  const assignedSubjects = semesterSubjects.filter(sub =>
+                    getSubjectLecturers(sub.id).some(l => l.id === lecturer.id)
+                  )
+                  const unassignedSubjects = semesterSubjects.filter(sub =>
+                    !getSubjectLecturers(sub.id).some(l => l.id === lecturer.id)
+                  )
+                  const colorStyle = getAvatarColor(lecturer.name)
+                  return (
+                    <tr key={lecturer.id} className="group transition-colors hover:bg-cyan-50/30">
+                      {/* Name + avatar */}
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className={`grid h-9 w-9 shrink-0 place-items-center rounded-full border-2 text-sm font-black ${colorStyle}`}>
+                            {lecturer.name.charAt(0).toUpperCase()}
+                          </div>
+                          <span className="font-semibold text-slate-900">{lecturer.name}</span>
+                        </div>
+                      </td>
+                      {/* Lecturer ID */}
+                      <td className="px-6 py-4">
+                        <span className="font-mono text-xs font-bold text-brand-600 bg-brand-50 rounded-lg px-2 py-1">
+                          {lecturer.lecturer_id}
+                        </span>
+                      </td>
+                      {/* Availability */}
+                      <td className="px-6 py-4">
+                        <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-brand-700">
+                          {lecturer.is_all_week ? 'All week' : (lecturer.available_days || []).join(', ')}
+                        </span>
+                      </td>
+                      {/* Assigned subjects */}
+                      <td className="px-6 py-4">
+                        <SubjectAssignCell
+                          lecturer={lecturer}
+                          assignedSubjects={assignedSubjects}
+                          unassignedSubjects={unassignedSubjects}
+                          toggleSubjectForLecturer={toggleSubjectForLecturer}
+                          colorStyle={colorStyle}
+                        />
+                      </td>
+                      {/* Remove */}
+                      <td className="px-6 py-4 text-right">
+                        <button
+                          onClick={() => removeLecturerFromSemester(lecturer.id)}
+                          className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500 transition"
+                          title="Remove from semester"
+                        >
+                          <Icon name="trash" className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

@@ -11,7 +11,16 @@ export function AppLayout() {
   const [lecturers, setLecturers] = useState([])
   const [classes, setClasses] = useState([])
   const [loading, setLoading] = useState(true)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState(null) // { msg, type: 'success' | 'error' }
+  const notify = (msg, type = 'success') => setNotice({ msg, type })
+  
+  useEffect(() => {
+    if (notice) {
+      const timer = setTimeout(() => setNotice(null), 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [notice])
+
   const [modal, setModal] = useState(null)
   
   const location = useLocation()
@@ -26,7 +35,7 @@ export function AppLayout() {
       supabase.from('classes').select('*').order('name'),
     ])
     const error = [semesterRes, subjectRes, lecturerRes, classRes].find((result) => result.error)?.error
-    if (error) setNotice(`Could not load data: ${error.message}`)
+    if (error) notify(`Could not load data: ${error.message}`, 'error')
     setSemesters(semesterRes.data || [])
     setSubjects(subjectRes.data || [])
     setLecturers(lecturerRes.data || [])
@@ -41,9 +50,9 @@ export function AppLayout() {
       ? supabase.from(table).update(values).eq('id', id).select().single()
       : supabase.from(table).insert(values).select().single()
     const { data: savedRecord, error } = await query
-    if (error) return setNotice(error.message)
+    if (error) return notify(error.message, 'error')
     setModal(null)
-    setNotice(`${id ? 'Changes' : 'New record'} saved successfully.`)
+    notify(`${id ? 'Changes' : 'New record'} saved successfully.`, 'success')
     await loadData()
     return savedRecord
   }
@@ -51,8 +60,8 @@ export function AppLayout() {
   async function remove(table, id) {
     if (!window.confirm('Delete this record? This cannot be undone.')) return
     const { error } = await supabase.from(table).delete().eq('id', id)
-    if (error) return setNotice(error.message)
-    setNotice('Record deleted.')
+    if (error) return notify(error.message, 'error')
+    notify('Record deleted.', 'success')
     await loadData()
   }
 
@@ -134,7 +143,7 @@ export function AppLayout() {
     // Sync to DB in background (no await on page render path)
     const primaryId = lecturerIds.length > 0 ? lecturerIds[0] : null
     supabase.from('subjects').update({ lecturer_id: primaryId }).eq('id', subjectId)
-      .then(({ error }) => { if (error) setNotice(error.message) })
+      .then(({ error }) => { if (error) notify(error.message, 'error') })
   }
 
   const getSubjectLecturers = (subjectId) => {
@@ -168,7 +177,7 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen bg-[#f5f8fa] font-sans text-[#16333a] lg:flex">
-      <aside className="flex w-full flex-col bg-brand-950 text-white lg:min-h-screen lg:w-64">
+      <aside className="flex w-full flex-col bg-brand-950 text-white lg:fixed lg:inset-y-0 lg:w-64">
         <div className="flex items-center gap-3 px-6 py-7">
           <div className="grid h-11 w-11 place-items-center overflow-hidden rounded-full bg-white p-0.5 shadow-lg">
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
@@ -192,7 +201,7 @@ export function AppLayout() {
         <div className="mt-auto hidden border-t border-white/10 px-6 py-5 text-xs text-cyan-100/55 lg:block">© 2026 IT Faculty</div>
       </aside>
 
-      <main className="min-w-0 flex-1 p-5 sm:p-8">
+      <main className="min-w-0 flex-1 p-5 sm:p-8 lg:ml-64">
         {location.pathname !== '/' && (
           <button 
             onClick={() => navigate(-1)} 
@@ -203,9 +212,16 @@ export function AppLayout() {
         )}
 
         {notice && (
-          <div className="mb-5 flex items-center justify-between rounded-xl border border-brand-600/20 bg-cyan-50 px-4 py-3 text-sm text-brand-800">
-            <span>{notice}</span>
-            <button onClick={() => setNotice('')} className="font-bold">×</button>
+          <div className={`mb-5 flex items-center justify-between rounded-xl border px-4 py-3 text-sm font-medium ${
+            notice.type === 'error'
+              ? 'border-rose-300 bg-rose-50 text-rose-800'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+          }`}>
+            <div className="flex items-center gap-2">
+              <span className="text-base">{notice.type === 'error' ? '⚠' : '✓'}</span>
+              <span>{notice.msg}</span>
+            </div>
+            <button onClick={() => setNotice(null)} className="ml-4 rounded p-1 text-lg leading-none opacity-60 hover:opacity-100">×</button>
           </div>
         )}
         
@@ -213,7 +229,7 @@ export function AppLayout() {
           <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">Loading timetable data…</div>
         ) : (
           <Outlet context={{ 
-            semesters, subjects, lecturers, classes, setModal, remove, metrics, loadData, setNotice, 
+            semesters, subjects, lecturers, classes, setModal, remove, metrics, loadData, setNotice: notify, 
             subjectLecturersMap, assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
             lecturerSubjectsMap, saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
           }} />
@@ -224,7 +240,8 @@ export function AppLayout() {
         <Modal 
           modal={modal} 
           semester={modal.semester} 
-          subjects={subjects} 
+          subjects={subjects}
+          lecturers={lecturers}
           getLecturerTaughtSubjects={getLecturerTaughtSubjects}
           saveLecturerTaughtSubjects={saveLecturerTaughtSubjects}
           onClose={() => setModal(null)} 

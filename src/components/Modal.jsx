@@ -3,25 +3,40 @@ import { Field } from './Field'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
+export function Modal({ modal, semester, subjects = [], lecturers = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
   const type = typeof modal === 'string' ? modal : modal.type
   const editing = typeof modal === 'object' && modal.data?.id
   const lecturerId = typeof modal === 'object' ? modal.data?.id : null
   const initialTaught = lecturerId && getLecturerTaughtSubjects ? getLecturerTaughtSubjects(lecturerId) : (modal.data?.taught_subjects || [])
+  const deptContext = typeof modal === 'object' ? modal.department : null
+  const intakeYearContext = typeof modal === 'object' ? modal.intakeYear : null
+  const classPrefix = deptContext && intakeYearContext ? `${deptContext.shortform}${String(intakeYearContext).slice(-2)}` : ''
 
   const [form, setForm] = useState(
-    typeof modal === 'object' ? { ...modal.data, taught_subjects: initialTaught } : 
+    typeof modal === 'object' && modal.data ? { 
+      ...modal.data, 
+      taught_subjects: initialTaught,
+      roomNumber: classPrefix && modal.data.name?.startsWith(classPrefix) ? modal.data.name.slice(classPrefix.length) : modal.data.name
+    } : 
     type === 'lecturer' ? { lecturer_id: '', name: '', is_all_week: true, available_days: [], taught_subjects: [] } : 
-    type === 'class' ? { name: '', shift: 'Morning', intake_year: new Date().getFullYear() } : 
+    type === 'class' ? { 
+      name: '', 
+      roomNumber: '',
+      shift: 'Morning', 
+      intake_year: intakeYearContext || new Date().getFullYear(),
+      department_id: deptContext ? deptContext.id : null
+    } : 
     { name: '' }
   )
 
+  const [formError, setFormError] = useState('')
   const [customSubject, setCustomSubject] = useState('')
 
   // Unique list of subjects from curriculum
   const availableSubjectNames = Array.from(new Set((subjects || []).map(s => s.name).filter(Boolean)))
 
   const change = (key, value) => {
+    if (key === 'lecturer_id') setFormError('')
     if (key === 'name' && type === 'class') {
       // Auto-detect year from class name: read the first 2 digits after letters
       // e.g. CA23 → 2023, CA235 → 2023, CN24 → 2024, CM26 → 2026
@@ -52,11 +67,27 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
         lab_hours: lab, 
         total_hours: theory + lab 
       }, form.id) 
-    } 
+    }
+
+    // Validate duplicate lecturer_id
+    if (type === 'lecturer' && form.lecturer_id) {
+      const duplicate = lecturers.find(
+        (l) => l.lecturer_id === form.lecturer_id.trim() && l.id !== form.id
+      )
+      if (duplicate) {
+        setFormError(`Lecturer ID "${form.lecturer_id.trim()}" is already used by ${duplicate.name}. Please use a unique ID.`)
+        return
+      }
+    }
+
     const table = type === 'semester' ? 'semesters' : type === 'class' ? 'classes' : `${type}s`
     
-    // Omit taught_subjects when saving directly to Supabase table to avoid schema errors
-    const { taught_subjects, ...dbPayload } = form
+    // Omit fields not in the Supabase schema
+    const { taught_subjects, roomNumber, department_id, ...dbPayload } = form
+
+    if (type === 'class') {
+      dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
+    }
 
     // Auto-generate code from name if missing (classes, semesters, subjects all have a NOT NULL code column)
     if ((type === 'class' || type === 'semester' || type === 'subject') && !dbPayload.code) {
@@ -151,36 +182,60 @@ export function Modal({ modal, semester, subjects = [], getLecturerTaughtSubject
           
           {type === 'class' && (
             <>
-              <Field label="Class Name" value={form.name} onChange={(v) => change('name', v)} placeholder="CA235" />
+              {classPrefix ? (
+                <label className="block text-sm font-semibold text-brand-950 mb-4">
+                  Class Name
+                  <div className="mt-1.5 flex items-center overflow-hidden rounded-xl border border-slate-200 focus-within:border-brand-600 focus-within:ring-1 focus-within:ring-brand-600">
+                    <span className="bg-slate-50 px-3 py-2.5 text-slate-500 font-mono font-bold border-r border-slate-200">
+                      {classPrefix}
+                    </span>
+                    <input 
+                      value={form.roomNumber || ''} 
+                      onChange={(e) => change('roomNumber', e.target.value)} 
+                      placeholder="1" 
+                      className="w-full px-3 py-2.5 font-normal text-slate-700 outline-none"
+                      autoFocus
+                    />
+                  </div>
+                </label>
+              ) : (
+                <Field label="Class Name" value={form.name} onChange={(v) => change('name', v)} placeholder="CA235" />
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <label className="block text-sm font-semibold text-brand-950">
                   Shift
-                  <select value={form.shift} onChange={(e) => change('shift', e.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
-                    <option>Morning</option>
-                    <option>Afternoon</option>
+                  <select value={form.shift || 'Morning'} onChange={(e) => change('shift', e.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
+                    <option value="Morning">Morning</option>
+                    <option value="Afternoon">Afternoon</option>
                   </select>
                 </label>
-                <label className="block text-sm font-semibold text-brand-950">
-                  Intake Year
-                  <div className="mt-1.5 flex items-center gap-2">
-                    <select value={form.intake_year} onChange={(e) => change('intake_year', Number(e.target.value))} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
-                      <option value={2027}>2027</option>
-                      <option value={2026}>2026</option>
-                      <option value={2025}>2025</option>
-                      <option value={2024}>2024</option>
-                      <option value={2023}>2023</option>
-                    </select>
-                    {form.name && form.name.match(/\d{2}$/) && (
-                      <span className="shrink-0 rounded-lg bg-cyan-100 px-2 py-1 text-xs font-bold text-brand-700">Auto ✓</span>
-                    )}
-                  </div>
-                </label>
+                {!intakeYearContext && (
+                  <label className="block text-sm font-semibold text-brand-950">
+                    Intake Year
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <select value={form.intake_year} onChange={(e) => change('intake_year', Number(e.target.value))} className="w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">
+                        <option value={2027}>2027</option>
+                        <option value={2026}>2026</option>
+                        <option value={2025}>2025</option>
+                        <option value={2024}>2024</option>
+                        <option value={2023}>2023</option>
+                      </select>
+                    </div>
+                  </label>
+                )}
               </div>
             </>
           )}
         </div>
         
-        <button className="mt-7 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800">
+        {formError && (
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            <span className="mt-0.5 shrink-0">⚠</span>
+            <span>{formError}</span>
+          </div>
+        )}
+        
+        <button className="mt-4 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800">
           {editing ? 'Save Changes' : `Create ${type === 'semester' ? 'Semester' : type === 'subject' ? 'Subject' : type === 'lecturer' ? 'Lecturer' : 'Class'}`}
         </button>
       </form>
