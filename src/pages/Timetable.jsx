@@ -4,7 +4,6 @@ import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import html2pdf from 'html2pdf.js'
 
-const YEARS = [2026, 2025, 2024, 2023]
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
 const SHIFT_SLOTS = {
@@ -142,8 +141,8 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
         if (block.lecturer) {
           const lid = block.lecturer.id
           
-          // Check Daily Load Limit (Max 3 slots per day across all shifts)
-          if ((localDailyLoad[lid]?.[day] || 0) + block.size > 3) {
+          // Check Daily Load Limit (Max 2 slots per day per teacher)
+          if ((localDailyLoad[lid]?.[day] || 0) + block.size > 2) {
             hasClash = true
           }
           
@@ -210,8 +209,8 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
             // Check clash and load limit
             if (block.lecturer) {
               const lid = block.lecturer.id
-              if ((localDailyLoad[lid]?.[day] || 0) + 1 > 3) {
-                continue // Exceeds daily load limit
+              if ((localDailyLoad[lid]?.[day] || 0) + 1 > 2) {
+                continue // Exceeds daily load limit (max 2 per teacher per day)
               }
               if (busyMap[lid] && busyMap[lid][day] && busyMap[lid][day][slotIndex]) {
                 continue // Clash, try next day
@@ -275,12 +274,43 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
     }
   }
 
+  // ── Step 4: Sort each day's blocks by lecturer (contiguous grouping, no alternating) ──
+  // All periods for Teacher A come first, then Teacher B — never T1,T2,T1,T2
+  for (const day of DAYS) {
+    const entries = timetable[day]
+    if (!entries || entries.length <= 1) continue
+    
+    // Group consecutive blocks by lecturer — keep theory before lab within same lecturer
+    // Sort: first by lecturerId, then by type (Theory before Lab)
+    // But we want the first lecturer's blocks to stay as-is, and second lecturer's to follow
+    // Strategy: stable sort by lecturerId so same-lecturer entries are contiguous
+    const lecturerOrder = []
+    const seen = new Set()
+    for (const entry of entries) {
+      const lid = entry.lecturer?.id || '__none__'
+      if (!seen.has(lid)) {
+        seen.add(lid)
+        lecturerOrder.push(lid)
+      }
+    }
+    // Re-sort entries: group by lecturer in order of first appearance
+    timetable[day] = entries.sort((a, b) => {
+      const aIdx = lecturerOrder.indexOf(a.lecturer?.id || '__none__')
+      const bIdx = lecturerOrder.indexOf(b.lecturer?.id || '__none__')
+      if (aIdx !== bIdx) return aIdx - bIdx
+      // Within same lecturer: Theory before Lab
+      if (a.type === 'Theory' && b.type === 'Lab') return -1
+      if (a.type === 'Lab' && b.type === 'Theory') return 1
+      return 0
+    })
+  }
+
   return timetable
 }
 
 
 export function Timetable() {
-  const { classes, semesters, subjects, lecturers, getRandomLecturerForClass, getSubjectLecturers, setNotice } = useOutletContext()
+  const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice } = useOutletContext()
 
   const [searchParams, setSearchParams] = useSearchParams()
   const urlClassId = searchParams.get('classId')
@@ -336,6 +366,22 @@ export function Timetable() {
     [classes, selectedYear]
   )
 
+  // Semesters filtered by intake year
+  // 2026=Year1→sem1-2, 2025=Year2→sem3-4, 2024=Year3→sem5-6, 2023=Year4→sem7-8
+  const filteredSemesters = useMemo(() => {
+    if (!selectedYear) return semesters
+    const CURRENT_YEAR = new Date().getFullYear()
+    const yearDiff = CURRENT_YEAR - Number(selectedYear)
+    const minSem = yearDiff * 2 + 1
+    const maxSem = minSem + 1
+    return semesters.filter(s => {
+      const match = s.name.match(/\d+/)
+      if (!match) return true
+      const semNum = parseInt(match[0], 10)
+      return semNum >= minSem && semNum <= maxSem
+    })
+  }, [semesters, selectedYear])
+
   // Selected class info
   const selectedClass = useMemo(() =>
     classes.find(c => c.id === selectedClassId),
@@ -354,8 +400,20 @@ export function Timetable() {
     [subjects, selectedSemesterId]
   )
 
+  const alreadyHasTimetable = useMemo(() => {
+    if (!selectedClassId || !selectedSemesterId) return false
+    const key = `saved_tt_${selectedClassId}_${selectedSemesterId}`
+    // Also check old format without semester
+    return !!localStorage.getItem(key) || !!localStorage.getItem(`saved_tt_${selectedClassId}`)
+  }, [selectedClassId, selectedSemesterId])
+
   const handleGenerate = () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
+
+    if (alreadyHasTimetable) {
+      setNotice(`Class "${selectedClass.name}" already has a timetable for ${selectedSemester.name}. Delete or shuffle the existing one instead.`, 'error')
+      return
+    }
 
     // Ensure all subjects have at least one lecturer assigned
     const unassignedSubjects = semesterSubjects.filter(sub => {
@@ -612,7 +670,7 @@ export function Timetable() {
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600"
               >
                 <option value="">— Select Year —</option>
-                {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+                {[...academicYears].sort((a, b) => b - a).map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
 
@@ -629,8 +687,16 @@ export function Timetable() {
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Semester —</option>
-                {semesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {filteredSemesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
+              {selectedYear && filteredSemesters.length === 0 && (
+                <p className="mt-1.5 text-xs text-rose-500">No semesters found for intake year {selectedYear}. Please add the matching semesters first.</p>
+              )}
+              {selectedYear && filteredSemesters.length > 0 && (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Showing semesters for <b>Class of {selectedYear}</b> (Year {new Date().getFullYear() - Number(selectedYear) + 1})
+                </p>
+              )}
             </div>
 
             {/* Step 3 - Class */}
@@ -653,9 +719,28 @@ export function Timetable() {
               )}
             </div>
 
+            {/* Warning: already has a timetable */}
+            {alreadyHasTimetable && selectedClassId && selectedSemesterId && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
+                <span className="text-lg">⚠️</span>
+                <span>
+                  <b>{selectedClass?.name}</b> already has a timetable for <b>{selectedSemester?.name}</b>. 
+                  You cannot generate another one. Go to the timetable to shuffle or delete it.
+                </span>
+              </div>
+            )}
+
+            {/* Warning: no subjects in semester */}
+            {selectedSemesterId && !semesterSubjects.length && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-start gap-2">
+                <span className="text-lg">❌</span>
+                <span>No subjects found for this semester. Please add subjects to the semester first.</span>
+              </div>
+            )}
+
             <button
               onClick={handleGenerate}
-              disabled={!selectedYear || !selectedSemesterId || !selectedClassId || !semesterSubjects.length}
+              disabled={!selectedYear || !selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />

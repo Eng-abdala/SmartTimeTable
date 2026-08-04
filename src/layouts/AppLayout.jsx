@@ -10,6 +10,8 @@ export function AppLayout() {
   const [subjects, setSubjects] = useState([])
   const [lecturers, setLecturers] = useState([])
   const [classes, setClasses] = useState([])
+  const [academicYears, setAcademicYears] = useState([])
+  const [departments, setDepartments] = useState([])
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState(null) // { msg, type: 'success' | 'error' }
   const notify = (msg, type = 'success') => setNotice({ msg, type })
@@ -28,18 +30,31 @@ export function AppLayout() {
 
   const loadData = async () => {
     setLoading(true)
-    const [semesterRes, subjectRes, lecturerRes, classRes] = await Promise.all([
-      supabase.from('semesters').select('*').order('created_at', { ascending: false }),
-      supabase.from('subjects').select('*').order('code'),
-      supabase.from('lecturers').select('*').order('name'),
-      supabase.from('classes').select('*').order('name'),
-    ])
-    const error = [semesterRes, subjectRes, lecturerRes, classRes].find((result) => result.error)?.error
-    if (error) notify(`Could not load data: ${error.message}`, 'error')
-    setSemesters(semesterRes.data || [])
-    setSubjects(subjectRes.data || [])
-    setLecturers(lecturerRes.data || [])
-    setClasses(classRes.data || [])
+    try {
+      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes] = await Promise.all([
+        supabase.from('semesters').select('*').order('name', { ascending: false }),
+        supabase.from('subjects').select('*').order('name'),
+        supabase.from('lecturers').select('*').order('name'),
+        supabase.from('classes').select('*').order('name'),
+        supabase.from('academic_years').select('*').order('year', { ascending: false }),
+        supabase.from('departments').select('*').order('name')
+      ])
+      if (semRes.error) throw semRes.error
+      if (subRes.error) throw subRes.error
+      if (lecRes.error) throw lecRes.error
+      if (clsRes.error) throw clsRes.error
+      if (yrRes.error) throw yrRes.error
+      if (deptRes.error) throw deptRes.error
+      
+      setSemesters(semRes.data || [])
+      setSubjects(subRes.data || [])
+      setLecturers(lecRes.data || [])
+      setClasses(clsRes.data || [])
+      setAcademicYears((yrRes.data || []).map(y => y.year))
+      setDepartments(deptRes.data || [])
+    } catch (err) {
+      notify(`Could not load data: ${err.message}`, 'error')
+    }
     setLoading(false)
   }
 
@@ -229,7 +244,8 @@ export function AppLayout() {
           <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">Loading timetable data…</div>
         ) : (
           <Outlet context={{ 
-            semesters, subjects, lecturers, classes, setModal, remove, metrics, loadData, setNotice: notify, 
+            semesters, subjects, lecturers, classes, academicYears, departments,
+            setModal, remove, metrics, loadData, setNotice: notify, 
             subjectLecturersMap, assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
             lecturerSubjectsMap, saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
           }} />

@@ -3,70 +3,70 @@ import { Icon } from '../components/Icon'
 import { ManagerTable } from '../components/ManagerTable'
 import { useMemo, useState } from 'react'
 import { Empty } from '../components/Empty'
+import { supabase } from '../lib/supabase'
+
+const STANDARD_DEPARTMENTS = [
+  { name: 'Computer Application', code: 'CA' },
+  { name: 'Computer Network', code: 'CN' },
+  { name: 'Computer Multimedia', code: 'CM' },
+ 
+]
 
 function generateId() {
-  return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)
+  return Math.random().toString(36).substr(2, 9)
 }
 
 export function Classes() {
-  const { classes, setModal, remove } = useOutletContext()
+  const { classes, academicYears, departments, setModal, remove, loadData, setNotice } = useOutletContext()
   const navigate = useNavigate()
 
   // ── Navigation state ───────────────────────────────────────────────────────
   const [selectedYear, setSelectedYear] = useState(null)
   const [selectedDept, setSelectedDept] = useState(null)
 
-  // ── Academic Years (localStorage) ──────────────────────────────────────────
-  const [academicYears, setAcademicYears] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('smart_tt_academic_years') || '[]') }
-    catch { return [] }
-  })
-
-  // ── Departments (localStorage) ─────────────────────────────────────────────
-  const [departments, setDepartments] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('smart_tt_departments') || '[]') }
-    catch { return [] }
-  })
-
   // ── Inline modal states ────────────────────────────────────────────────────
   const [showYearForm, setShowYearForm] = useState(false)
   const [yearInput, setYearInput] = useState(new Date().getFullYear())
 
   const [showDeptForm, setShowDeptForm] = useState(false)
-  const [deptForm, setDeptForm] = useState({ dept_id: '', name: '', shortform: '' })
   const [editingDept, setEditingDept] = useState(null)
+  const [deptForm, setDeptForm] = useState({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
   const [deptError, setDeptError] = useState('')
 
-  // ── Save helpers ───────────────────────────────────────────────────────────
-  const saveAcademicYears = (years) => {
-    const sorted = [...years].sort((a, b) => b - a)
-    setAcademicYears(sorted)
-    localStorage.setItem('smart_tt_academic_years', JSON.stringify(sorted))
-  }
-
-  const saveDepartments = (depts) => {
-    setDepartments(depts)
-    localStorage.setItem('smart_tt_departments', JSON.stringify(depts))
-  }
-
   // ── Academic Year CRUD ─────────────────────────────────────────────────────
-  const addAcademicYear = () => {
+  const addAcademicYear = async () => {
     const year = Number(yearInput)
     if (!year || year < 2000 || year > 2100) return
     if (academicYears.includes(year)) return
-    saveAcademicYears([...academicYears, year])
+    
+    const { error } = await supabase.from('academic_years').insert([{ year }])
+    if (error) {
+      setNotice(error.message, 'error')
+      return
+    }
+    
+    await loadData()
     setYearInput(new Date().getFullYear())
     setShowYearForm(false)
   }
 
-  const removeAcademicYear = (year) => {
+  const removeAcademicYear = async (year) => {
     if (!window.confirm(`Delete Class of ${year} and all its departments?`)) return
-    saveAcademicYears(academicYears.filter(y => y !== year))
-    saveDepartments(departments.filter(d => d.intake_year !== year))
+    
+    // Departments cascade delete is not enforced yet, so we delete manually
+    await supabase.from('departments').delete().eq('intake_year', year)
+    const { error } = await supabase.from('academic_years').delete().eq('year', year)
+    
+    if (error) {
+      setNotice(error.message, 'error')
+      return
+    }
+    
+    await loadData()
   }
 
   // ── Department CRUD ────────────────────────────────────────────────────────
-  const addDepartment = () => {
+  const addDepartment = async () => {
     if (!deptForm.name.trim() || !deptForm.shortform.trim()) {
       setDeptError('Name and shortform are required.')
       return
@@ -75,52 +75,63 @@ export function Classes() {
     const shortform = deptForm.shortform.trim().toUpperCase()
 
     if (editingDept) {
-      // Check duplicate shortform (excluding current)
       if (departments.some(d => d.id !== editingDept && d.shortform === shortform && d.intake_year === selectedYear)) {
-        setDeptError(`Shortform "${shortform}" already exists for ${selectedYear}.`)
+        setDeptError(`Department "${deptForm.name}" already exists for ${selectedYear}.`)
         return
       }
-      saveDepartments(departments.map(d =>
-        d.id === editingDept
-          ? { ...d, dept_id: deptForm.dept_id.trim() || d.dept_id, name: deptForm.name.trim(), shortform }
-          : d
-      ))
+      
+      const { error } = await supabase.from('departments').update({
+        name: deptForm.name.trim(),
+        shortform
+      }).eq('id', editingDept)
+
+      if (error) { setDeptError(error.message); return }
     } else {
       if (departments.some(d => d.shortform === shortform && d.intake_year === selectedYear)) {
-        setDeptError(`Shortform "${shortform}" already exists for ${selectedYear}.`)
+        setDeptError(`Department "${deptForm.name}" already exists for ${selectedYear}.`)
         return
       }
-      saveDepartments([...departments, {
-        id: generateId(),
-        dept_id: deptForm.dept_id.trim() || `D${departments.filter(d => d.intake_year === selectedYear).length + 1}`,
+      
+      const { error } = await supabase.from('departments').insert([{
         name: deptForm.name.trim(),
         shortform,
         intake_year: selectedYear,
       }])
+
+      if (error) { setDeptError(error.message); return }
     }
 
-    setDeptForm({ dept_id: '', name: '', shortform: '' })
+    await loadData()
+    setDeptForm({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
     setEditingDept(null)
     setDeptError('')
     setShowDeptForm(false)
   }
 
-  const removeDepartment = (deptId) => {
+  const removeDepartment = async (deptId) => {
     const dept = departments.find(d => d.id === deptId)
     if (!dept) return
-    if (!window.confirm(`Delete department "${dept.name}" (${dept.shortform})?`)) return
-    saveDepartments(departments.filter(d => d.id !== deptId))
+    if (!window.confirm(`Delete ${dept.name} department and all its classes?`)) return
+    
+    // Classes are handled separately or cascade depending on schema, but safe to just delete dept
+    const { error } = await supabase.from('departments').delete().eq('id', deptId)
+    if (error) {
+      setNotice(error.message, 'error')
+      return
+    }
+    
+    await loadData()
   }
 
   const openDeptForm = (dept = null) => {
+    setDeptError('')
     if (dept) {
       setEditingDept(dept.id)
-      setDeptForm({ dept_id: dept.dept_id, name: dept.name, shortform: dept.shortform })
+      setDeptForm({ name: dept.name, shortform: dept.shortform })
     } else {
       setEditingDept(null)
-      setDeptForm({ dept_id: '', name: '', shortform: '' })
+      setDeptForm({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
     }
-    setDeptError('')
     setShowDeptForm(true)
   }
 
@@ -246,33 +257,29 @@ export function Classes() {
               </div>
               <div className="space-y-4">
                 <label className="block text-sm font-semibold text-brand-950">
-                  Department ID
-                  <input
-                    value={deptForm.dept_id}
-                    onChange={e => setDeptForm({ ...deptForm, dept_id: e.target.value })}
-                    placeholder="D1"
-                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-                  />
-                </label>
-                <label className="block text-sm font-semibold text-brand-950">
                   Department Name <span className="text-rose-500">*</span>
-                  <input
+                  <select
                     value={deptForm.name}
-                    onChange={e => { setDeptForm({ ...deptForm, name: e.target.value }); setDeptError('') }}
-                    placeholder="Computer Application"
+                    onChange={e => { 
+                      const selectedName = e.target.value;
+                      const dept = STANDARD_DEPARTMENTS.find(d => d.name === selectedName);
+                      setDeptForm({ ...deptForm, name: selectedName, shortform: dept ? dept.code : '' });
+                      setDeptError('');
+                    }}
                     required
                     className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-                  />
+                  >
+                    {STANDARD_DEPARTMENTS.map(d => (
+                      <option key={d.code} value={d.name}>{d.name}</option>
+                    ))}
+                  </select>
                 </label>
                 <label className="block text-sm font-semibold text-brand-950">
-                  Shortform <span className="text-rose-500">*</span>
+                  Shortform (Auto-generated)
                   <input
                     value={deptForm.shortform}
-                    onChange={e => { setDeptForm({ ...deptForm, shortform: e.target.value.toUpperCase() }); setDeptError('') }}
-                    placeholder="CA"
-                    required
-                    maxLength={5}
-                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal uppercase text-slate-700 outline-none focus:border-brand-600"
+                    readOnly
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-bold text-slate-500 outline-none"
                   />
                 </label>
 
