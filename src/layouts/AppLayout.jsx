@@ -255,7 +255,8 @@ export function AppLayout() {
       {modal && (
         <Modal 
           modal={modal} 
-          semester={modal.semester} 
+          semester={modal.semester}
+          semesters={semesters}
           subjects={subjects}
           lecturers={lecturers}
           getLecturerTaughtSubjects={getLecturerTaughtSubjects}

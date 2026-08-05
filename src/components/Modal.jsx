@@ -3,7 +3,7 @@ import { Field } from './Field'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-export function Modal({ modal, semester, subjects = [], lecturers = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
+export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
   const type = typeof modal === 'string' ? modal : modal.type
   const editing = typeof modal === 'object' && modal.data?.id
   const lecturerId = typeof modal === 'object' ? modal.data?.id : null
@@ -24,6 +24,7 @@ export function Modal({ modal, semester, subjects = [], lecturers = [], getLectu
       roomNumber: '',
       shift: 'Morning', 
       intake_year: intakeYearContext || new Date().getFullYear(),
+      semester_id: null,
       department_id: deptContext ? deptContext.id : null
     } : 
     { name: '' }
@@ -84,6 +85,7 @@ export function Modal({ modal, semester, subjects = [], lecturers = [], getLectu
     
     // Omit fields not in the Supabase schema
     const { taught_subjects, roomNumber, department_id, ...dbPayload } = form
+    // semester_id is valid for classes — keep it in dbPayload
 
     if (type === 'class') {
       dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
@@ -224,6 +226,20 @@ export function Modal({ modal, semester, subjects = [], lecturers = [], getLectu
                   </label>
                 )}
               </div>
+              <label className="block text-sm font-semibold text-brand-950">
+                Current Semester
+                <select
+                  value={form.semester_id || ''}
+                  onChange={(e) => change('semester_id', e.target.value || null)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
+                >
+                  <option value="">— Not assigned —</option>
+                  {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs font-normal text-slate-400">You can update this anytime when the class moves to the next semester.</span>
+              </label>
             </>
           )}
         </div>

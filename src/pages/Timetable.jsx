@@ -315,7 +315,6 @@ export function Timetable() {
   const [searchParams, setSearchParams] = useSearchParams()
   const urlClassId = searchParams.get('classId')
 
-  const [selectedYear, setSelectedYear] = useState(() => localStorage.getItem('tt_year') || '')
   const [selectedSemesterId, setSelectedSemesterId] = useState(() => localStorage.getItem('tt_semester') || '')
   const [selectedClassId, setSelectedClassId] = useState(() => urlClassId || localStorage.getItem('tt_class') || '')
   const [timetable, setTimetable] = useState(null)
@@ -337,13 +336,10 @@ export function Timetable() {
             setGenerated(true)
             setIsSaved(true)
             setSelectedClassId(urlClassId)
-            
-            // Auto-select year/semester if possible based on class
+            // Auto-select semester from the class
             const targetClass = classes.find(c => c.id === urlClassId)
-            if (targetClass) {
-              setSelectedYear(targetClass.intake_year.toString())
-              // We'll leave semester alone as we don't know it just from the grid, 
-              // but they can see the timetable immediately.
+            if (targetClass && targetClass.semester_id) {
+              setSelectedSemesterId(targetClass.semester_id)
             }
           }
         } catch {}
@@ -351,36 +347,32 @@ export function Timetable() {
     }
   }, [urlClassId, classes])
 
-  // Persist selections to localStorage whenever they change
-  const saveYear = (v) => { setSelectedYear(v); localStorage.setItem('tt_year', v) }
-  const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v) }
+  // Persist selections to localStorage
+  const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v); saveClass('') }
   const saveClass = (v) => { 
     setSelectedClassId(v); 
     localStorage.setItem('tt_class', v);
-    setSearchParams({}); // clear URL param if they change class manually
+    setSearchParams({});
   }
 
-  // Classes filtered by selected year
-  const yearClasses = useMemo(() =>
-    classes.filter(c => c.intake_year === Number(selectedYear)),
-    [classes, selectedYear]
-  )
-
-  // Semesters filtered by intake year
-  // 2026=Year1→sem1-2, 2025=Year2→sem3-4, 2024=Year3→sem5-6, 2023=Year4→sem7-8
-  const filteredSemesters = useMemo(() => {
-    if (!selectedYear) return semesters
-    const CURRENT_YEAR = new Date().getFullYear()
-    const yearDiff = CURRENT_YEAR - Number(selectedYear)
-    const minSem = yearDiff * 2 + 1
-    const maxSem = minSem + 1
-    return semesters.filter(s => {
-      const match = s.name.match(/\d+/)
-      if (!match) return true
-      const semNum = parseInt(match[0], 10)
-      return semNum >= minSem && semNum <= maxSem
+  // Classes filtered by selected semester, excluding ones that already have a saved timetable
+  const semesterClasses = useMemo(() => {
+    if (!selectedSemesterId) return []
+    return classes.filter(c => {
+      if (c.semester_id !== selectedSemesterId) return false
+      // Hide classes that already have a saved timetable
+      const hasSaved = !!localStorage.getItem(`saved_tt_${c.id}`)
+      return !hasSaved
     })
-  }, [semesters, selectedYear])
+  }, [classes, selectedSemesterId])
+
+  // Only show semesters that have at least one class assigned
+  const sortedSemesters = useMemo(() => {
+    const assignedSemesterIds = new Set(classes.map(c => c.semester_id).filter(Boolean))
+    return [...semesters]
+      .filter(s => assignedSemesterIds.has(s.id))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  }, [semesters, classes])
 
   // Selected class info
   const selectedClass = useMemo(() =>
@@ -488,10 +480,10 @@ export function Timetable() {
   }
 
   const handleReset = () => {
-    setSearchParams({}) // Clear URL params so it doesn't reload the saved class
-    setSelectedYear(''); setSelectedSemesterId(''); setSelectedClassId('')
+    setSearchParams({})
+    setSelectedSemesterId(''); setSelectedClassId('')
     setTimetable(null); setGenerated(false)
-    localStorage.removeItem('tt_year'); localStorage.removeItem('tt_semester')
+    localStorage.removeItem('tt_semester')
     localStorage.removeItem('tt_class'); localStorage.removeItem('tt_grid')
   }
 
@@ -658,65 +650,43 @@ export function Timetable() {
               <p className="mt-1 text-sm text-slate-500">Fill in the steps below then click Generate</p>
             </div>
 
-            {/* Step 1 - Year */}
+            {/* Step 1 - Semester */}
             <div>
               <label className="block text-sm font-bold text-brand-950 mb-1.5">
                 <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">1</span>
-                Intake Year
-              </label>
-              <select
-                value={selectedYear}
-                onChange={e => { saveYear(e.target.value); saveClass(''); saveSemester('') }}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600"
-              >
-                <option value="">— Select Year —</option>
-                {[...academicYears].sort((a, b) => b - a).map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
-            </div>
-
-            {/* Step 2 - Semester */}
-            <div>
-              <label className="block text-sm font-bold text-brand-950 mb-1.5">
-                <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">2</span>
                 Semester
               </label>
               <select
                 value={selectedSemesterId}
-              onChange={e => saveSemester(e.target.value)}
-                disabled={!selectedYear}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
+                onChange={e => saveSemester(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600"
               >
                 <option value="">— Select Semester —</option>
-                {filteredSemesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {sortedSemesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              {selectedYear && filteredSemesters.length === 0 && (
-                <p className="mt-1.5 text-xs text-rose-500">No semesters found for intake year {selectedYear}. Please add the matching semesters first.</p>
+              {sortedSemesters.length === 0 && (
+                <p className="mt-1.5 text-xs text-amber-600">No semesters have classes assigned yet. Go to <b>Classes</b> and use &ldquo;Set Semester&rdquo; on each year card.</p>
               )}
-              {selectedYear && filteredSemesters.length > 0 && (
-                <p className="mt-1.5 text-xs text-slate-400">
-                  Showing semesters for <b>Class of {selectedYear}</b> (Year {new Date().getFullYear() - Number(selectedYear) + 1})
-                </p>
+              {selectedSemesterId && semesterClasses.length === 0 && (
+                <p className="mt-1.5 text-xs text-amber-600">No classes are assigned to this semester yet. Go to Classes and use &ldquo;Set Semester&rdquo; to assign them.</p>
               )}
             </div>
 
-            {/* Step 3 - Class */}
+            {/* Step 2 - Class */}
             <div>
               <label className="block text-sm font-bold text-brand-950 mb-1.5">
-                <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">3</span>
+                <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">2</span>
                 Class
               </label>
               <select
                 value={selectedClassId}
                 onChange={e => saveClass(e.target.value)}
-                disabled={!selectedYear || !selectedSemesterId}
+                disabled={!selectedSemesterId}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Class —</option>
-                {yearClasses.map(c => <option key={c.id} value={c.id}>{c.name} – {c.shift}</option>)}
+                {semesterClasses.map(c => <option key={c.id} value={c.id}>{c.name} – {c.shift}</option>)}
               </select>
-              {selectedYear && yearClasses.length === 0 && (
-                <p className="mt-1.5 text-xs text-rose-500">No classes found for intake year {selectedYear}.</p>
-              )}
             </div>
 
             {/* Warning: already has a timetable */}
@@ -740,7 +710,7 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedYear || !selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />

@@ -17,7 +17,7 @@ function generateId() {
 }
 
 export function Classes() {
-  const { classes, academicYears, departments, setModal, remove, loadData, setNotice } = useOutletContext()
+  const { classes, academicYears, departments, semesters, setModal, remove, loadData, setNotice } = useOutletContext()
   const navigate = useNavigate()
 
   // ── Navigation state ───────────────────────────────────────────────────────
@@ -32,6 +32,11 @@ export function Classes() {
   const [editingDept, setEditingDept] = useState(null)
   const [deptForm, setDeptForm] = useState({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
   const [deptError, setDeptError] = useState('')
+
+  // ── Bulk Semester Assignment ───────────────────────────────────────────────
+  const [bulkSemYear, setBulkSemYear] = useState(null)  // which year's modal is open
+  const [bulkSemId, setBulkSemId] = useState('')        // selected semester id
+  const [bulkSemLoading, setBulkSemLoading] = useState(false)
 
   // ── Academic Year CRUD ─────────────────────────────────────────────────────
   const addAcademicYear = async () => {
@@ -63,6 +68,35 @@ export function Classes() {
     }
     
     await loadData()
+  }
+
+  // ── Bulk Semester Assignment for entire intake year ───────────────────────
+  const openBulkSemModal = (year) => {
+    // Pre-select the semester that most classes in this year already have
+    const yearCls = classes.filter(c => c.intake_year === year)
+    const existing = yearCls.find(c => c.semester_id)?.semester_id || ''
+    setBulkSemId(existing)
+    setBulkSemYear(year)
+  }
+
+  const applyBulkSemester = async () => {
+    if (!bulkSemYear) return
+    setBulkSemLoading(true)
+    const yearCls = classes.filter(c => c.intake_year === bulkSemYear)
+    const ids = yearCls.map(c => c.id)
+    const { error } = await supabase
+      .from('classes')
+      .update({ semester_id: bulkSemId || null })
+      .in('id', ids)
+    if (error) {
+      setNotice(error.message, 'error')
+    } else {
+      const semName = semesters.find(s => s.id === bulkSemId)?.name || 'None'
+      setNotice(`All Class-of-${bulkSemYear} classes set to ${semName}.`)
+      await loadData()
+    }
+    setBulkSemLoading(false)
+    setBulkSemYear(null)
   }
 
   // ── Department CRUD ────────────────────────────────────────────────────────
@@ -194,7 +228,7 @@ export function Classes() {
         </div>
 
         <ManagerTable
-          headers={['Class Name', 'Shift', 'Actions']}
+          headers={['Class Name', 'Shift', 'Semester', 'Actions']}
           rows={deptClasses}
           empty={`No classes registered for ${currentDept.name} yet.`}
           render={(item) => (
@@ -202,6 +236,15 @@ export function Classes() {
               <td className="px-6 py-4 font-medium text-brand-950">{item.name}</td>
               <td className="px-6 py-4">
                 <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{item.shift}</span>
+              </td>
+              <td className="px-6 py-4">
+                {item.semester_id ? (
+                  <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-brand-600">
+                    {semesters.find(s => s.id === item.semester_id)?.name || 'Unknown'}
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-400">No semester</span>
+                )}
               </td>
               <td className="px-6 py-4">
                 <div className="flex gap-2">
@@ -352,6 +395,40 @@ export function Classes() {
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <>
+      {/* ── Bulk Semester Assignment Modal ── */}
+      {bulkSemYear !== null && (
+        <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-6 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {bulkSemYear}</h2>
+              <button type="button" onClick={() => setBulkSemYear(null)} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
+            </div>
+            <p className="mb-4 text-sm text-slate-500">
+              This will update <b>all {classes.filter(c => c.intake_year === bulkSemYear).length} classes</b> in the Class of {bulkSemYear} group to the selected semester at once.
+            </p>
+            <label className="block text-sm font-semibold text-brand-950">
+              Semester
+              <select
+                value={bulkSemId}
+                onChange={e => setBulkSemId(e.target.value)}
+                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
+              >
+                <option value="">— None —</option>
+                {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={applyBulkSemester}
+              disabled={bulkSemLoading}
+              className="mt-4 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800 disabled:opacity-50"
+            >
+              {bulkSemLoading ? 'Saving…' : 'Apply to All Classes'}
+            </button>
+          </div>
+        </div>
+      )}
       <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
@@ -431,6 +508,29 @@ export function Classes() {
                   <span className="text-brand-500 transition group-hover:translate-x-1"><Icon name="arrow" /></span>
                 </div>
               </button>
+              {/* Semester badge and bulk-assign button */}
+              <div className="mt-3 flex items-center justify-between border-t border-slate-50 pt-3">
+                {(() => {
+                  const yearCls = classes.filter(c => c.intake_year === year)
+                  const assignedSemId = yearCls.find(c => c.semester_id)?.semester_id
+                  const assignedSem = semesters.find(s => s.id === assignedSemId)
+                  const allSame = yearCls.length > 0 && yearCls.every(c => c.semester_id === assignedSemId)
+                  return assignedSem ? (
+                    <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700">
+                      {assignedSem.name}{!allSame ? ' (mixed)' : ''}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400">No semester</span>
+                  )
+                })()}
+                <button
+                  onClick={e => { e.stopPropagation(); openBulkSemModal(year) }}
+                  className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 border border-brand-200 hover:bg-cyan-50 transition"
+                  title="Assign semester to all classes in this year"
+                >
+                  Set Semester
+                </button>
+              </div>
             </div>
           ))}
         </section>

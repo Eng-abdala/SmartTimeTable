@@ -44,8 +44,21 @@ create table if not exists public.classes (
   name text not null,
   code text not null unique,
   shift text not null check (shift in ('Morning', 'Afternoon')),
-  intake_year integer not null default extract(year from current_date)
+  intake_year integer not null default extract(year from current_date),
+  semester_id uuid references public.semesters(id) on delete set null
 );
+
+-- Migration: add semester_id to existing classes table if it doesn't exist
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema='public' and table_name='classes' and column_name='semester_id'
+  ) then
+    alter table public.classes add column semester_id uuid references public.semesters(id) on delete set null;
+  end if;
+end;
+$$;
 
 create index if not exists subjects_semester_id_idx on public.subjects(semester_id);
 create index if not exists semesters_created_at_idx on public.semesters(created_at desc);
