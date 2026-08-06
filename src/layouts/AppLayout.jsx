@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import facultyLogo from '../assets/logo.png'
 import { Icon } from '../components/Icon'
 import { Modal } from '../components/Modal'
+import { getYearSemesterMap } from '../lib/semesterUtils'
 
 export function AppLayout() {
   const [semesters, setSemesters] = useState([])
@@ -46,10 +47,24 @@ export function AppLayout() {
       if (yrRes.error) throw yrRes.error
       if (deptRes.error) throw deptRes.error
       
+      const loadedClasses = clsRes.data || []
+      const yearSemMap = getYearSemesterMap(loadedClasses)
+      
+      // Auto-sync any classes that don't match their Academic Year's semester
+      const syncedClasses = loadedClasses.map(c => {
+        if (c.intake_year && yearSemMap[c.intake_year] && c.semester_id !== yearSemMap[c.intake_year]) {
+          const correctSem = yearSemMap[c.intake_year]
+          // Sync DB in background
+          supabase.from('classes').update({ semester_id: correctSem }).eq('id', c.id)
+          return { ...c, semester_id: correctSem }
+        }
+        return c
+      })
+
       setSemesters(semRes.data || [])
       setSubjects(subRes.data || [])
       setLecturers(lecRes.data || [])
-      setClasses(clsRes.data || [])
+      setClasses(syncedClasses)
       setAcademicYears((yrRes.data || []).map(y => y.year))
       setDepartments(deptRes.data || [])
     } catch (err) {
@@ -83,6 +98,7 @@ export function AppLayout() {
   const nav = [
     ['Dashboard', 'grid', '/'],
     ['Timetable', 'calendar', '/timetable'],
+    ['Master Schedule', 'table', '/schedule'],
     ['Semesters', 'layers', '/semesters'],
     ['Classes', 'group', '/classes'],
     ['Lecturers', 'users', '/lecturers']
@@ -259,6 +275,7 @@ export function AppLayout() {
           semesters={semesters}
           subjects={subjects}
           lecturers={lecturers}
+          classes={classes}
           getLecturerTaughtSubjects={getLecturerTaughtSubjects}
           saveLecturerTaughtSubjects={saveLecturerTaughtSubjects}
           onClose={() => setModal(null)} 

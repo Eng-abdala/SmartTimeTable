@@ -6,6 +6,7 @@ import { SemesterDetail } from './pages/SemesterDetail'
 import { Lecturers } from './pages/Lecturers'
 import { Classes } from './pages/Classes'
 import { Timetable } from './pages/Timetable'
+import { Schedule } from './pages/Schedule'
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="lecturers" element={<Lecturers />} />
           <Route path="classes" element={<Classes />} />
           <Route path="timetable" element={<Timetable />} />
+          <Route path="schedule" element={<Schedule />} />
         </Route>
       </Routes>
     </BrowserRouter>

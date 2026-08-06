@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Field } from './Field'
+import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
+export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], classes = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
   const type = typeof modal === 'string' ? modal : modal.type
   const editing = typeof modal === 'object' && modal.data?.id
   const lecturerId = typeof modal === 'object' ? modal.data?.id : null
@@ -11,6 +12,16 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
   const deptContext = typeof modal === 'object' ? modal.department : null
   const intakeYearContext = typeof modal === 'object' ? modal.intakeYear : null
   const classPrefix = deptContext && intakeYearContext ? `${deptContext.shortform}${String(intakeYearContext).slice(-2)}` : ''
+
+  // Compute the semester this academic year already has locked in
+  const yearSemesterMap = useMemo(() => getYearSemesterMap(classes), [classes])
+  const semesterYearMap = useMemo(() => {
+    const m = {}
+    Object.entries(yearSemesterMap).forEach(([yr, semId]) => { if (semId) m[semId] = Number(yr) })
+    return m
+  }, [yearSemesterMap])
+  // The semester inherited from the academic year context
+  const yearInheritedSemesterId = intakeYearContext ? (yearSemesterMap[intakeYearContext] || null) : null
 
   const [form, setForm] = useState(
     typeof modal === 'object' && modal.data ? { 
@@ -24,7 +35,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       roomNumber: '',
       shift: 'Morning', 
       intake_year: intakeYearContext || new Date().getFullYear(),
-      semester_id: null,
+      // Auto-inherit semester from the academic year
+      semester_id: yearInheritedSemesterId || null,
       department_id: deptContext ? deptContext.id : null
     } : 
     { name: '' }
@@ -89,6 +101,10 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
 
     if (type === 'class') {
       dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
+      // Enforce: if the academic year has an assigned semester, always save that
+      if (yearInheritedSemesterId) {
+        dbPayload.semester_id = yearInheritedSemesterId
+      }
     }
 
     // Auto-generate code from name if missing (classes, semesters, subjects all have a NOT NULL code column)
@@ -228,17 +244,54 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
               </div>
               <label className="block text-sm font-semibold text-brand-950">
                 Current Semester
-                <select
-                  value={form.semester_id || ''}
-                  onChange={(e) => change('semester_id', e.target.value || null)}
-                  className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-                >
-                  <option value="">— Not assigned —</option>
-                  {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-                <span className="mt-1 block text-xs font-normal text-slate-400">You can update this anytime when the class moves to the next semester.</span>
+                {yearInheritedSemesterId ? (
+                  // Locked — show read-only badge
+                  <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-2.5">
+                    <span className="text-base">🔒</span>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-brand-700 text-sm">
+                        {semesters.find(s => s.id === yearInheritedSemesterId)?.name || 'Unknown'}
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Inherited from Class of {intakeYearContext} — cannot be changed individually
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      value={form.semester_id || ''}
+                      onChange={(e) => {
+                        const newSemId = e.target.value || null
+                        // Block if this semester is already owned by another year
+                        if (newSemId) {
+                          const ownerYear = semesterYearMap[newSemId]
+                          const curYear = intakeYearContext || form.intake_year
+                          if (ownerYear && ownerYear !== curYear) {
+                            setFormError(`That semester is already assigned to Class of ${ownerYear}. Each semester can only belong to one academic year.`)
+                            return
+                          }
+                        }
+                        setFormError('')
+                        change('semester_id', newSemId)
+                      }}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
+                    >
+                      <option value="">— Not assigned —</option>
+                      {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => {
+                        const ownerYear = semesterYearMap[s.id]
+                        const curYear = intakeYearContext || form.intake_year
+                        const takenByOther = ownerYear && ownerYear !== curYear
+                        return (
+                          <option key={s.id} value={s.id} disabled={takenByOther}>
+                            {s.name}{takenByOther ? ` (Class of ${ownerYear})` : ''}
+                          </option>
+                        )
+                      })}
+                    </select>
+                    <span className="mt-1 block text-xs font-normal text-slate-400">You can update this anytime when the class moves to the next semester.</span>
+                  </>
+                )}
               </label>
             </>
           )}

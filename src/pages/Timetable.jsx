@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { useOutletContext, useSearchParams } from 'react-router-dom'
+import { useOutletContext, useSearchParams, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import html2pdf from 'html2pdf.js'
@@ -316,6 +316,7 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
 
 export function Timetable() {
   const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice, loadData } = useOutletContext()
+  const navigate = useNavigate()
 
   const [searchParams, setSearchParams] = useSearchParams()
   const urlClassId = searchParams.get('classId')
@@ -371,15 +372,10 @@ export function Timetable() {
     setSearchParams({});
   }
 
-  // Classes filtered by selected semester, excluding ones that already have a saved timetable
+  // Classes filtered by selected semester (showing all assigned classes)
   const semesterClasses = useMemo(() => {
     if (!selectedSemesterId) return []
-    return classes.filter(c => {
-      if (c.semester_id !== selectedSemesterId) return false
-      // Hide classes that already have a saved timetable
-      const hasSaved = !!localStorage.getItem(`saved_tt_${c.id}`)
-      return !hasSaved
-    })
+    return classes.filter(c => c.semester_id === selectedSemesterId)
   }, [classes, selectedSemesterId])
 
   // Only show semesters that have at least one class assigned
@@ -414,13 +410,8 @@ export function Timetable() {
     return !!savedTimetableMap[`${selectedClassId}_${selectedSemesterId}`]
   }, [selectedClassId, selectedSemesterId, savedTimetableMap])
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
-
-    if (alreadyHasTimetable) {
-      setNotice(`Class "${selectedClass.name}" already has a timetable for ${selectedSemester.name}. Delete or shuffle the existing one instead.`, 'error')
-      return
-    }
 
     // Ensure all subjects have at least one lecturer assigned
     const unassignedSubjects = semesterSubjects.filter(sub => {
@@ -434,19 +425,20 @@ export function Timetable() {
       return
     }
 
-    // Build busyMap from all OTHER saved timetables
+    // Build busyMap from all OTHER saved timetables directly from Supabase DB
     const busyMap = {} // lecturerId -> day -> slotIndex -> true
     const dailyLoad = {} // lecturerId -> day -> totalSlots
     const classCountMap = {} // lecturerId -> Set of classIds
 
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key.startsWith('saved_tt_') && key !== `saved_tt_${selectedClassId}`) {
-        try {
-          const savedGrid = JSON.parse(localStorage.getItem(key))
-          const savedClassId = key.replace('saved_tt_', '')
+    const { data: dbTimetables } = await supabase.from('timetables').select('class_id, semester_id, grid')
+
+    if (dbTimetables) {
+      dbTimetables.forEach(row => {
+        if (row.class_id !== selectedClassId) {
+          const savedGrid = row.grid
+          const savedClassId = row.class_id
           const savedClass = classes.find(c => c.id === savedClassId)
-          
+
           DAYS.forEach(day => {
             if (savedGrid[day]) {
               savedGrid[day].forEach(session => {
@@ -471,10 +463,8 @@ export function Timetable() {
               })
             }
           })
-        } catch (e) {
-          console.error('Failed to parse saved timetable for clash detection', e)
         }
-      }
+      })
     }
 
     const grid = generateTimetable(
@@ -532,6 +522,38 @@ export function Timetable() {
       })
       .from(el)
       .save()
+  }
+
+  const handleExportExcel = () => {
+    const el = printRef.current
+    if (!el) return
+    const className = `${selectedClass?.name}_${selectedSemester?.name}`.replace(/\s+/g, '_')
+    
+    const clone = el.cloneNode(true)
+    const html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          table { border-collapse: collapse; width: 100%; font-family: 'Times New Roman', serif; font-size: 11pt; }
+          th, td { border: 1px solid #000000; padding: 6px; text-align: center; }
+          th { background-color: #f1f5f9; font-weight: bold; }
+          .header-day { background-color: #d9eef9; font-weight: bold; }
+        </style>
+      </head>
+      <body>${clone.outerHTML}</body>
+      </html>
+    `
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Timetable_${className}.xls`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    setNotice('Class Timetable exported to Excel successfully!', 'success')
   }
 
   const handleGenerateAnother = () => {
@@ -617,7 +639,16 @@ export function Timetable() {
       <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Timetable Generator</h1>
+          <div className="flex flex-wrap items-center gap-3 mt-1">
+            <h1 className="text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Timetable Generator</h1>
+            <button
+              onClick={() => navigate('/schedule')}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-brand-200 bg-brand-50/80 px-3 py-1.5 text-xs font-semibold text-brand-800 transition hover:bg-brand-100"
+            >
+              <Icon name="table" className="h-4 w-4 text-brand-600" />
+              View All Classes Master Schedule Grid
+            </button>
+          </div>
         </div>
         {generated && (
           <div className="flex flex-wrap gap-3">
@@ -665,6 +696,9 @@ export function Timetable() {
               </button>
             )}
 
+            <button onClick={handleExportExcel} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-emerald-700">
+              <span className="text-base">📊</span> Excel
+            </button>
             <button onClick={handleDownloadPdf} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-rose-700">
               <Icon name="print" className="h-4 w-4" /> PDF
             </button>
@@ -721,18 +755,25 @@ export function Timetable() {
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Class —</option>
-                {semesterClasses.map(c => <option key={c.id} value={c.id}>{c.name} – {c.shift}</option>)}
+                {semesterClasses.map(c => {
+                  const isSaved = !!savedTimetableMap[`${c.id}_${selectedSemesterId}`]
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {c.name} – {c.shift} Shift {isSaved ? '✓ (Saved)' : ''}
+                    </option>
+                  )
+                })}
               </select>
             </div>
 
-            {/* Warning: already has a timetable */}
+            {/* Status: already has a timetable */}
             {alreadyHasTimetable && selectedClassId && selectedSemesterId && (
-              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
-                <span className="text-lg">⚠️</span>
-                <span>
-                  <b>{selectedClass?.name}</b> already has a timetable for <b>{selectedSemester?.name}</b>. 
-                  You cannot generate another one. Go to the timetable to shuffle or delete it.
-                </span>
+              <div className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-900 flex items-start gap-2">
+                <span className="text-lg">ℹ️</span>
+                <div>
+                  <b>{selectedClass?.name}</b> already has a saved timetable for <b>{selectedSemester?.name}</b>.
+                  <p className="mt-1 text-xs text-blue-700">You can click below to generate a new layout or click &quot;Master Schedule Grid&quot; to see all timetables together.</p>
+                </div>
               </div>
             )}
 
@@ -746,11 +787,11 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />
-              Generate Timetable
+              {alreadyHasTimetable ? 'Generate / Shuffle New Timetable' : 'Generate Timetable'}
             </button>
           </div>
         </div>

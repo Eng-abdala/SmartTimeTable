@@ -4,6 +4,7 @@ import { ManagerTable } from '../components/ManagerTable'
 import { useMemo, useState } from 'react'
 import { Empty } from '../components/Empty'
 import { supabase } from '../lib/supabase'
+import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const STANDARD_DEPARTMENTS = [
   { name: 'Computer Application', code: 'CA' },
@@ -70,17 +71,40 @@ export function Classes() {
     await loadData()
   }
 
+  // ── Derived: map of { intake_year -> semester_id } from current data ────────
+  const yearSemesterMap = useMemo(() => getYearSemesterMap(classes), [classes])
+  // map of { semester_id -> intake_year } — which year owns each semester
+  const semesterYearMap = useMemo(() => {
+    const m = {}
+    Object.entries(yearSemesterMap).forEach(([yr, semId]) => { if (semId) m[semId] = Number(yr) })
+    return m
+  }, [yearSemesterMap])
+
   // ── Bulk Semester Assignment for entire intake year ───────────────────────
+  const [bulkSemError, setBulkSemError] = useState('')
+
   const openBulkSemModal = (year) => {
-    // Pre-select the semester that most classes in this year already have
-    const yearCls = classes.filter(c => c.intake_year === year)
-    const existing = yearCls.find(c => c.semester_id)?.semester_id || ''
+    // Pre-select the semester already assigned to this year
+    const existing = yearSemesterMap[year] || ''
     setBulkSemId(existing)
+    setBulkSemError('')
     setBulkSemYear(year)
   }
 
   const applyBulkSemester = async () => {
     if (!bulkSemYear) return
+
+    // ── Uniqueness check: is this semester already claimed by another year?
+    if (bulkSemId) {
+      const ownerYear = semesterYearMap[bulkSemId]
+      if (ownerYear && ownerYear !== bulkSemYear) {
+        const semName = semesters.find(s => s.id === bulkSemId)?.name || 'that semester'
+        setBulkSemError(`${semName} is already assigned to Class of ${ownerYear}. Each semester can only belong to one academic year.`)
+        return
+      }
+    }
+
+    setBulkSemError('')
     setBulkSemLoading(true)
     const yearCls = classes.filter(c => c.intake_year === bulkSemYear)
     const ids = yearCls.map(c => c.id)
@@ -238,11 +262,16 @@ export function Classes() {
                 <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{item.shift}</span>
               </td>
               <td className="px-6 py-4">
-                {item.semester_id ? (
-                  <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-brand-600">
-                    {semesters.find(s => s.id === item.semester_id)?.name || 'Unknown'}
-                  </span>
-                ) : (
+                {item.semester_id ? (() => {
+                  const inherited = yearSemesterMap[selectedYear]
+                  const isLocked = inherited && inherited === item.semester_id
+                  return (
+                    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${isLocked ? 'bg-cyan-50 text-brand-600 border border-cyan-200' : 'bg-cyan-50 text-brand-600'}`}>
+                      {isLocked && <span title="Inherited from Academic Year">🔒</span>}
+                      {semesters.find(s => s.id === item.semester_id)?.name || 'Unknown'}
+                    </span>
+                  )
+                })() : (
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-400">No semester</span>
                 )}
               </td>
@@ -401,24 +430,39 @@ export function Classes() {
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
             <div className="mb-6 flex items-center justify-between">
               <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {bulkSemYear}</h2>
-              <button type="button" onClick={() => setBulkSemYear(null)} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
+              <button type="button" onClick={() => { setBulkSemYear(null); setBulkSemError('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
             </div>
             <p className="mb-4 text-sm text-slate-500">
               This will update <b>all {classes.filter(c => c.intake_year === bulkSemYear).length} classes</b> in the Class of {bulkSemYear} group to the selected semester at once.
             </p>
+            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
+              ⚠ Each semester can only be assigned to <b>one academic year</b>. Semesters already used by other years are disabled.
+            </div>
             <label className="block text-sm font-semibold text-brand-950">
               Semester
               <select
                 value={bulkSemId}
-                onChange={e => setBulkSemId(e.target.value)}
+                onChange={e => { setBulkSemId(e.target.value); setBulkSemError('') }}
                 className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
               >
                 <option value="">— None —</option>
-                {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
+                {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => {
+                  const ownerYear = semesterYearMap[s.id]
+                  const takenByOther = ownerYear && ownerYear !== bulkSemYear
+                  return (
+                    <option key={s.id} value={s.id} disabled={takenByOther}>
+                      {s.name}{takenByOther ? ` (Assigned to Class of ${ownerYear})` : ''}
+                    </option>
+                  )
+                })}
               </select>
             </label>
+            {bulkSemError && (
+              <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                <span className="mt-0.5 shrink-0">⚠</span>
+                <span>{bulkSemError}</span>
+              </div>
+            )}
             <button
               onClick={applyBulkSemester}
               disabled={bulkSemLoading}
