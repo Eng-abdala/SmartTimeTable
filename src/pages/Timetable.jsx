@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react'
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import html2pdf from 'html2pdf.js'
+import { supabase } from '../lib/supabase'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
@@ -35,11 +36,11 @@ const COLORS = [
 
 function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap) {
   // ── Step 1: Assign lecturers to subjects for this specific class ──────────
-  // Constraint: one lecturer → one subject per class (no lecturer teaches two subjects to the same class)
+  // Constraint: one lecturer → one subject per class (prefer unique, but fallback if no other option)
   const usedLecturerIds = new Set()        // lecturers already committed to a subject for this class
   const subjectLecturerMap = new Map()     // subjectId → lecturer object
 
-  // Constraint 2: A lecturer can only teach a maximum of 3 different classes overall.
+  // Constraint: A lecturer can only teach a maximum of 3 different classes overall.
   const availableLecturers = lecturers.filter(l => {
     const classCount = classCountMap && classCountMap[l.id] ? classCountMap[l.id].size : 0
     // If they already teach 3 classes, they can only be picked if this class is already one of them
@@ -51,17 +52,21 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
     const allQualified = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
     const qualifiedForSubject = allQualified.filter(l => availableLecturers.some(a => a.id === l.id))
 
-    // Try the preferred random pick first, then cycle through other qualified lecturers
     const preferred = getRandomLecturerForClass ? getRandomLecturerForClass(sub.id, selectedClassId) : null
     const preferredIfAvailable = preferred && availableLecturers.some(a => a.id === preferred.id) ? preferred : null
 
-    // STRICT ASSIGNMENT: Only use lecturers explicitly assigned to this subject
     const candidates = preferredIfAvailable
       ? [preferredIfAvailable, ...qualifiedForSubject.filter(l => l.id !== preferredIfAvailable.id)]
       : [...qualifiedForSubject]
 
-    // Pick the first candidate not already used for another subject in this class
-    const assigned = candidates.find(l => l && !usedLecturerIds.has(l.id)) || null
+    // First try: pick a lecturer not already used for another subject in this class
+    let assigned = candidates.find(l => l && !usedLecturerIds.has(l.id)) || null
+    
+    // Fallback: if no unique lecturer available, allow reuse (prevents empty teacher slots)
+    if (!assigned && candidates.length > 0) {
+      assigned = candidates[0]
+    }
+    
     if (assigned) usedLecturerIds.add(assigned.id)
     subjectLecturerMap.set(sub.id, assigned)
   }
@@ -310,7 +315,7 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
 
 
 export function Timetable() {
-  const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice } = useOutletContext()
+  const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice, loadData } = useOutletContext()
 
   const [searchParams, setSearchParams] = useSearchParams()
   const urlClassId = searchParams.get('classId')
@@ -324,28 +329,39 @@ export function Timetable() {
   
   const printRef = useRef()
 
+  // Load existing timetables map from DB (which class+semester combos already have a timetable)
+  const [savedTimetableMap, setSavedTimetableMap] = useState({}) // key: `${classId}_${semesterId}` -> row id
+
+  const loadSavedTimetableMap = useCallback(async () => {
+    const { data } = await supabase.from('timetables').select('id, class_id, semester_id')
+    if (data) {
+      const map = {}
+      data.forEach(row => { map[`${row.class_id}_${row.semester_id}`] = row.id })
+      setSavedTimetableMap(map)
+    }
+  }, [])
+
+  useEffect(() => { loadSavedTimetableMap() }, [])
+
   // Load timetable on mount if URL has classId
   useEffect(() => {
-    if (urlClassId) {
-      const savedGrid = localStorage.getItem(`saved_tt_${urlClassId}`)
-      if (savedGrid) {
-        try {
-          const parsed = JSON.parse(savedGrid)
-          if (parsed && Array.isArray(parsed['Saturday'])) {
-            setTimetable(parsed)
-            setGenerated(true)
-            setIsSaved(true)
-            setSelectedClassId(urlClassId)
-            // Auto-select semester from the class
-            const targetClass = classes.find(c => c.id === urlClassId)
-            if (targetClass && targetClass.semester_id) {
-              setSelectedSemesterId(targetClass.semester_id)
-            }
-          }
-        } catch {}
-      }
+    if (urlClassId && selectedSemesterId) {
+      ;(async () => {
+        const { data } = await supabase
+          .from('timetables')
+          .select('grid')
+          .eq('class_id', urlClassId)
+          .eq('semester_id', selectedSemesterId)
+          .maybeSingle()
+        if (data?.grid) {
+          setTimetable(data.grid)
+          setGenerated(true)
+          setIsSaved(true)
+          setSelectedClassId(urlClassId)
+        }
+      })()
     }
-  }, [urlClassId, classes])
+  }, [urlClassId, selectedSemesterId])
 
   // Persist selections to localStorage
   const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v); saveClass('') }
@@ -392,12 +408,11 @@ export function Timetable() {
     [subjects, selectedSemesterId]
   )
 
+  // Already has a timetable check (from DB)
   const alreadyHasTimetable = useMemo(() => {
     if (!selectedClassId || !selectedSemesterId) return false
-    const key = `saved_tt_${selectedClassId}_${selectedSemesterId}`
-    // Also check old format without semester
-    return !!localStorage.getItem(key) || !!localStorage.getItem(`saved_tt_${selectedClassId}`)
-  }, [selectedClassId, selectedSemesterId])
+    return !!savedTimetableMap[`${selectedClassId}_${selectedSemesterId}`]
+  }, [selectedClassId, selectedSemesterId, savedTimetableMap])
 
   const handleGenerate = () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
@@ -472,11 +487,26 @@ export function Timetable() {
     setIsSaved(false)
   }
 
-  const handleSaveTimetable = () => {
-    if (timetable && selectedClassId) {
-      localStorage.setItem(`saved_tt_${selectedClassId}`, JSON.stringify(timetable))
-      setIsSaved(true)
+  const handleSaveTimetable = async () => {
+    if (!timetable || !selectedClassId || !selectedSemesterId) return
+    const existingId = savedTimetableMap[`${selectedClassId}_${selectedSemesterId}`]
+    let error
+    if (existingId) {
+      // Update existing row
+      const res = await supabase.from('timetables').update({ grid: timetable }).eq('id', existingId)
+      error = res.error
+    } else {
+      // Insert new row
+      const res = await supabase.from('timetables').insert([{ class_id: selectedClassId, semester_id: selectedSemesterId, grid: timetable }])
+      error = res.error
     }
+    if (error) {
+      setNotice(`Failed to save: ${error.message}`, 'error')
+      return
+    }
+    await loadSavedTimetableMap()
+    setIsSaved(true)
+    setNotice('Timetable saved to database successfully!', 'success')
   }
 
   const handleReset = () => {
@@ -514,14 +544,20 @@ export function Timetable() {
     localStorage.removeItem('tt_grid')
   }
 
-  const handleDeleteSaved = () => {
-    if (selectedClassId) {
-      if (confirm('Are you sure you want to delete this saved timetable? This will allow lecturers to be scheduled in these slots again.')) {
-        localStorage.removeItem(`saved_tt_${selectedClassId}`)
-        handleGenerateAnother() // This conveniently resets the view
-        setNotice('Saved timetable deleted successfully.')
-      }
+  const handleDeleteSaved = async () => {
+    if (!selectedClassId || !selectedSemesterId) return
+    if (!confirm('Are you sure you want to delete this saved timetable?')) return
+    const existingId = savedTimetableMap[`${selectedClassId}_${selectedSemesterId}`]
+    if (existingId) {
+      const { error } = await supabase.from('timetables').delete().eq('id', existingId)
+      if (error) { setNotice(`Failed to delete: ${error.message}`, 'error'); return }
     }
+    // Also clean up any old localStorage entries
+    localStorage.removeItem(`saved_tt_${selectedClassId}`)
+    localStorage.removeItem(`saved_tt_${selectedClassId}_${selectedSemesterId}`)
+    await loadSavedTimetableMap()
+    handleGenerateAnother()
+    setNotice('Timetable deleted successfully.', 'success')
   }
 
   const getAvailableLecturersForSession = (subject, day, slotIndex, currentLecturerId) => {
