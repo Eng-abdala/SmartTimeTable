@@ -34,38 +34,48 @@ const COLORS = [
   'bg-indigo-50 border-indigo-200 text-indigo-900',
 ]
 
+// Returns true if the lecturer is available to teach on the given day
+function isLecturerAvailableOnDay(lecturer, day) {
+  if (!lecturer) return true
+  if (lecturer.is_all_week) return true
+  return Array.isArray(lecturer.available_days) && lecturer.available_days.includes(day)
+}
+
 function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap) {
   // ── Step 1: Assign lecturers to subjects for this specific class ──────────
-  // Constraint: one lecturer → one subject per class (prefer unique, but fallback if no other option)
+  // Constraint: one lecturer → one subject per class
   const usedLecturerIds = new Set()        // lecturers already committed to a subject for this class
   const subjectLecturerMap = new Map()     // subjectId → lecturer object
 
-  // Constraint: A lecturer can only teach a maximum of 3 different classes overall.
-  const availableLecturers = lecturers.filter(l => {
-    const classCount = classCountMap && classCountMap[l.id] ? classCountMap[l.id].size : 0
-    // If they already teach 3 classes, they can only be picked if this class is already one of them
-    return classCount < 3 || (classCountMap && classCountMap[l.id]?.has(selectedClassId))
-  })
-
   for (const sub of semesterSubjects) {
-    // Get all qualified lecturers for this subject, filtered by max class limit
     const allQualified = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
-    const qualifiedForSubject = allQualified.filter(l => availableLecturers.some(a => a.id === l.id))
-
     const preferred = getRandomLecturerForClass ? getRandomLecturerForClass(sub.id, selectedClassId) : null
-    const preferredIfAvailable = preferred && availableLecturers.some(a => a.id === preferred.id) ? preferred : null
-
-    const candidates = preferredIfAvailable
-      ? [preferredIfAvailable, ...qualifiedForSubject.filter(l => l.id !== preferredIfAvailable.id)]
-      : [...qualifiedForSubject]
-
-    // First try: pick a lecturer not already used for another subject in this class
-    let assigned = candidates.find(l => l && !usedLecturerIds.has(l.id)) || null
     
-    // Fallback: if no unique lecturer available, allow reuse (prevents empty teacher slots)
-    if (!assigned && candidates.length > 0) {
-      assigned = candidates[0]
-    }
+    // Sort all qualified lecturers to find the best fit
+    const candidates = [...allQualified].sort((a, b) => {
+      // 1. Prefer the "preferred" (randomly selected for variety) if they are in the list
+      if (preferred && a.id === preferred.id) return -1
+      if (preferred && b.id === preferred.id) return 1
+      
+      // 2. Prefer lecturers who haven't hit the 3-class limit
+      const countA = classCountMap && classCountMap[a.id] ? classCountMap[a.id].size : 0
+      const countB = classCountMap && classCountMap[b.id] ? classCountMap[b.id].size : 0
+      const aOverLimit = countA >= 3 && (!classCountMap[a.id]?.has(selectedClassId))
+      const bOverLimit = countB >= 3 && (!classCountMap[b.id]?.has(selectedClassId))
+      if (aOverLimit !== bOverLimit) return aOverLimit ? 1 : -1
+      
+      // 3. Prefer lecturers with fewer total classes
+      if (countA !== countB) return countA - countB
+      
+      // 4. Prefer lecturers not already teaching another subject in THIS class
+      const aUsed = usedLecturerIds.has(a.id)
+      const bUsed = usedLecturerIds.has(b.id)
+      if (aUsed !== bUsed) return aUsed ? 1 : -1
+      
+      return 0
+    })
+
+    const assigned = candidates.length > 0 ? candidates[0] : null
     
     if (assigned) usedLecturerIds.add(assigned.id)
     subjectLecturerMap.set(sub.id, assigned)
@@ -119,8 +129,11 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
   const baseMax = Math.ceil(totalPeriods / 5)
 
   const getMaxSlots = (day) => {
+    // Base: always at least 4 slots per day
     let m = Math.max(baseMax, 4)
-    if (shift === 'Morning' && (day === 'Tuesday' || day === 'Wednesday')) m = Math.max(m, 5)
+    // Morning shift: allow up to 5 slots on any day (overflow beyond 20 periods/week)
+    // The 5th slot maps to the 7:00 AM early start on that day
+    if (shift === 'Morning') m = Math.min(m, 5)
     return m
   }
 
@@ -145,9 +158,14 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
         let hasClash = false
         if (block.lecturer) {
           const lid = block.lecturer.id
+
+          // Check lecturer day availability
+          if (!isLecturerAvailableOnDay(block.lecturer, day)) {
+            hasClash = true
+          }
           
           // Check Daily Load Limit (Max 2 slots per day per teacher)
-          if ((localDailyLoad[lid]?.[day] || 0) + block.size > 2) {
+          if (!hasClash && (localDailyLoad[lid]?.[day] || 0) + block.size > 2) {
             hasClash = true
           }
           
@@ -211,9 +229,12 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
         for (const day of DAYS) {
           const slotIndex = daySlotCount[day]
           if (slotIndex < getMaxSlots(day)) {
-            // Check clash and load limit
+            // Check clash, day availability, and load limit
             if (block.lecturer) {
               const lid = block.lecturer.id
+              if (!isLecturerAvailableOnDay(block.lecturer, day)) {
+                continue // Lecturer not available on this day
+              }
               if ((localDailyLoad[lid]?.[day] || 0) + 1 > 2) {
                 continue // Exceeds daily load limit (max 2 per teacher per day)
               }
@@ -585,7 +606,13 @@ export function Timetable() {
   const getAvailableLecturersForSession = (subject, day, slotIndex, currentLecturerId) => {
     const allQualified = getSubjectLecturers(subject.id) || []
     return allQualified.filter(l => {
-      if (currentLecturerId === l.id) return true // always show current
+      // Always show the currently assigned lecturer so it stays selectable
+      if (currentLecturerId === l.id) return true
+
+      // Filter out lecturers not available on this day
+      if (!l.is_all_week) {
+        if (!Array.isArray(l.available_days) || !l.available_days.includes(day)) return false
+      }
       
       // Check global busy map (other classes)
       if (globalBusyMap[l.id]?.[day]?.[slotIndex]) return false
@@ -832,7 +859,10 @@ export function Timetable() {
                       {daySessions.map((session, idx) => {
                         let timeString = ''
                         if (shift === 'Morning') {
-                          // Allow overflow times if total periods require it
+                          // morningEarly: 7:00 AM start — used when a day has more than 4 sessions (overflow)
+                          // morningDefault: 7:45 AM start — used for standard ≤4-session days
+                          // Morning capacity = 20 periods/week (4 per day × 5 days)
+                          // Each extra period beyond 20 requires one day to start at 7:00 AM
                           const morningEarly = [
                             '07:00 AM - 07:45 AM', '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM',
                             '10:15 AM - 11:15 AM', '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM'
@@ -842,7 +872,8 @@ export function Timetable() {
                             '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM', '02:15 PM - 03:15 PM'
                           ]
                           
-                          if ((day === 'Tuesday' || day === 'Wednesday') && daySessions.length >= 5) {
+                          // Any day with more than 4 sessions needs the early 7:00 AM slot
+                          if (daySessions.length > 4) {
                             timeString = morningEarly[session.slotIndex] || 'Extra Slot'
                           } else {
                             timeString = morningDefault[session.slotIndex] || 'Extra Slot'

@@ -8,14 +8,19 @@ import html2pdf from 'html2pdf.js'
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 const DAY_SHORT = { Saturday: 'Sat', Sunday: 'Sun', Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed' }
 
-const MORNING_SLOTS = [
-  { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
-  { slotIndex: 1, time: '7:45 AM – 8:45 AM' },
-  { slotIndex: 2, time: '8:45 AM – 9:45 AM' },
+// Morning shift: 20 standard periods/week (4 per day × 5 days, 7:45 AM – 12:15 PM)
+// When a class has >20 periods, overflow days start at 7:00 AM (5 sessions that day)
+// slotIndex 0–3 = standard slots on a 4-session day
+// slotIndex 0–4 = all 5 slots on a 5-session (overflow) day
+const MORNING_STANDARD_SLOTS = [
+  { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
+  { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
   { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
-  { slotIndex: 3, time: '10:15 AM – 11:15 AM' },
-  { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
+  { slotIndex: 2, time: '10:15 AM – 11:15 AM' },
+  { slotIndex: 3, time: '11:15 AM – 12:15 PM' },
 ]
+
+
 
 const AFTERNOON_SLOTS = [
   { slotIndex: 0, time: '1:00 PM – 1:50 PM' },
@@ -227,8 +232,23 @@ export function Schedule() {
     setNotice('Master Schedule exported to Excel successfully!', 'success')
   }
 
+  // Renders the master schedule grid for a given shift.
+  // For morning: dynamically adds the 7:00 AM early row per day when any class has >4 sessions.
   const renderGridTable = (classList, shiftName, slots) => {
     if (!classList.length) return null
+
+    const isMorning = shiftName === 'Morning'
+
+    // For morning: compute per-day whether ANY class has an overflow session (slotIndex 4)
+    const dayHasOverflow = {}
+    if (isMorning) {
+      DAYS.forEach(day => {
+        dayHasOverflow[day] = classList.some(cls => {
+          const grid = timetablesByClass[cls.id]
+          return grid && grid[day] && grid[day].some(s => s.slotIndex === 4)
+        })
+      })
+    }
 
     return (
       <div className="mb-8">
@@ -263,83 +283,113 @@ export function Schedule() {
             </thead>
 
             <tbody className="divide-y divide-black bg-white">
-              {DAYS.map(day => (
-                <React.Fragment key={day}>
-                  {slots.map((slot, slotIdx) => {
-                    const isBreak = slot.isBreak
-                    return (
-                      <tr key={`${day}_${slot.time}`} className="border-b border-black">
-                        {/* Day Column (Spans all slots for the day) */}
-                        {slotIdx === 0 && (
-                          <td
-                            rowSpan={slots.length}
-                            className="border-r border-black bg-white px-3 py-2 text-center font-bold text-black align-middle day-col text-sm"
-                          >
-                            {DAY_SHORT[day]}
-                          </td>
-                        )}
+              {DAYS.map(day => {
+                // Build the row list for this day
+                let daySlots
+                if (isMorning) {
+                  const hasOverflow = dayHasOverflow[day]
+                  if (hasOverflow) {
+                    // Overflow day: 7:00 AM early slot + 4 standard slots + break
+                    // slotIndex mapping: 0→7:00AM, 1→7:45AM, 2→8:45AM, (break), 3→10:15AM, 4→11:15AM
+                    daySlots = [
+                      { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
+                      { slotIndex: 1, time: '7:45 AM – 8:45 AM' },
+                      { slotIndex: 2, time: '8:45 AM – 9:45 AM' },
+                      { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
+                      { slotIndex: 3, time: '10:15 AM – 11:15 AM' },
+                      { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
+                    ]
+                  } else {
+                    // Normal day: 4 standard slots + break, starting 7:45 AM
+                    daySlots = [
+                      { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
+                      { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
+                      { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
+                      { slotIndex: 2, time: '10:15 AM – 11:15 AM' },
+                      { slotIndex: 3, time: '11:15 AM – 12:15 PM' },
+                    ]
+                  }
+                } else {
+                  daySlots = slots
+                }
 
-                        {/* Time Column */}
-                        <td className="border-r border-black bg-white px-2 py-2 text-center font-medium text-slate-900 time-col whitespace-nowrap">
-                          {slot.time}
-                        </td>
-
-                        {/* Class Columns */}
-                        {classList.map(cls => {
-                          if (isBreak) {
-                            return (
-                              <td key={cls.id} className="border-r border-black bg-amber-50 px-2 py-2 text-center text-amber-900 font-semibold text-xs">
-                                ☕ Break
-                              </td>
-                            )
-                          }
-
-                          const grid = timetablesByClass[cls.id]
-                          const session = grid && grid[day] ? grid[day].find(s => s.slotIndex === slot.slotIndex) : null
-
-                          if (!session) {
-                            return (
-                              <td key={cls.id} className="border-r border-black px-2 py-2 text-center text-slate-300 italic">
-                                —
-                              </td>
-                            )
-                          }
-
-                          const { subject, lecturer } = session
-                          const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${slot.slotIndex}_${lecturer.id}`)
-                          const style = getSubjectStyle(subject?.id)
-
-                          // Clean Subject - Lecturer format matching the reference image!
-                          const cellText = `${subject?.name || 'Subject'}${lecturer ? ' - ' + lecturer.name : ''}`
-
-                          return (
+                return (
+                  <React.Fragment key={day}>
+                    {daySlots.map((slot, slotIdx) => {
+                      const isBreak = slot.isBreak
+                      return (
+                        <tr key={`${day}_${slot.time}`} className="border-b border-black">
+                          {/* Day Column (Spans all slots for the day) */}
+                          {slotIdx === 0 && (
                             <td
-                              key={cls.id}
-                              style={{
-                                backgroundColor: isClashing ? '#fee2e2' : style.bg,
-                                color: isClashing ? '#991b1b' : style.text
-                              }}
-                              className={`border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs transition ${
-                                isClashing ? 'ring-2 ring-red-500 font-bold' : ''
-                              }`}
+                              rowSpan={daySlots.length}
+                              className="border-r border-black bg-white px-3 py-2 text-center font-bold text-black align-middle day-col text-sm"
                             >
-                              <div className="leading-tight">
-                                {cellText}
-                              </div>
-
-                              {isClashing && (
-                                <div className="mt-1 text-[9px] font-bold text-red-700 uppercase tracking-wider">
-                                  ⚠️ Clash
-                                </div>
-                              )}
+                              {DAY_SHORT[day]}
                             </td>
-                          )
-                        })}
-                      </tr>
-                    )
-                  })}
-                </React.Fragment>
-              ))}
+                          )}
+
+                          {/* Time Column */}
+                          <td className="border-r border-black bg-white px-2 py-2 text-center font-medium text-slate-900 time-col whitespace-nowrap">
+                            {slot.time}
+                          </td>
+
+                          {/* Class Columns */}
+                          {classList.map(cls => {
+                            if (isBreak) {
+                              return (
+                                <td key={cls.id} className="border-r border-black bg-amber-50 px-2 py-2 text-center text-amber-900 font-semibold text-xs">
+                                  ☕ Break
+                                </td>
+                              )
+                            }
+
+                            const grid = timetablesByClass[cls.id]
+                            const session = grid && grid[day] ? grid[day].find(s => s.slotIndex === slot.slotIndex) : null
+
+                            if (!session) {
+                              return (
+                                <td key={cls.id} className="border-r border-black px-2 py-2 text-center text-slate-300 italic">
+                                  —
+                                </td>
+                              )
+                            }
+
+                            const { subject, lecturer } = session
+                            const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${slot.slotIndex}_${lecturer.id}`)
+                            const style = getSubjectStyle(subject?.id)
+
+                            const cellText = `${subject?.name || 'Subject'}${lecturer ? ' - ' + lecturer.name : ''}`
+
+                            return (
+                              <td
+                                key={cls.id}
+                                style={{
+                                  backgroundColor: isClashing ? '#fee2e2' : style.bg,
+                                  color: isClashing ? '#991b1b' : style.text
+                                }}
+                                className={`border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs transition ${
+                                  isClashing ? 'ring-2 ring-red-500 font-bold' : ''
+                                }`}
+                              >
+                                <div className="leading-tight">
+                                  {cellText}
+                                </div>
+
+                                {isClashing && (
+                                  <div className="mt-1 text-[9px] font-bold text-red-700 uppercase tracking-wider">
+                                    ⚠️ Clash
+                                  </div>
+                                )}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      )
+                    })}
+                  </React.Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -446,11 +496,11 @@ export function Schedule() {
         <div ref={printRef}>
           {selectedShift === 'All' ? (
             <>
-              {renderGridTable(morningClasses, 'Morning', MORNING_SLOTS)}
+              {renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)}
               {renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)}
             </>
           ) : selectedShift === 'Morning' ? (
-            renderGridTable(morningClasses, 'Morning', MORNING_SLOTS)
+            renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)
           ) : (
             renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)
           )}

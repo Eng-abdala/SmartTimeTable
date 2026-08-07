@@ -29,6 +29,13 @@ create table if not exists public.subject_lecturers (
   unique(subject_id, lecturer_id, class_id)
 );
 
+create table if not exists public.semester_lecturers (
+  id uuid primary key default gen_random_uuid(),
+  semester_id uuid not null references public.semesters(id) on delete cascade,
+  lecturer_id uuid not null references public.lecturers(id) on delete cascade,
+  unique(semester_id, lecturer_id)
+);
+
 create table if not exists public.lecturers (
   id uuid primary key default gen_random_uuid(),
   lecturer_id text not null unique,
@@ -70,14 +77,22 @@ alter table public.semesters enable row level security;
 alter table public.subjects enable row level security;
 alter table public.lecturers enable row level security;
 alter table public.classes enable row level security;
+alter table public.subject_lecturers enable row level security;
+alter table public.semester_lecturers enable row level security;
+
 drop policy if exists "Phase 1 semester access" on public.semesters;
 drop policy if exists "Phase 1 subject access" on public.subjects;
 drop policy if exists "Phase 1 lecturer access" on public.lecturers;
 drop policy if exists "Phase 1 class access" on public.classes;
+drop policy if exists "Phase 1 subject lecturers access" on public.subject_lecturers;
+drop policy if exists "Phase 1 semester lecturers access" on public.semester_lecturers;
+
 create policy "Phase 1 semester access" on public.semesters for all to anon using (true) with check (true);
 create policy "Phase 1 subject access" on public.subjects for all to anon using (true) with check (true);
 create policy "Phase 1 lecturer access" on public.lecturers for all to anon using (true) with check (true);
 create policy "Phase 1 class access" on public.classes for all to anon using (true) with check (true);
+create policy "Phase 1 subject lecturers access" on public.subject_lecturers for all to anon using (true) with check (true);
+create policy "Phase 1 semester lecturers access" on public.semester_lecturers for all to anon using (true) with check (true);
 
 create table if not exists public.timetable_slots (
   id uuid primary key default gen_random_uuid(),

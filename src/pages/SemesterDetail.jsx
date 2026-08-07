@@ -2,6 +2,7 @@ import { useOutletContext, useParams, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import { useMemo, useState, useRef, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
 
 const blankSubject = { name: '', theory_hours: 0, lab_hours: 0 }
 
@@ -288,8 +289,10 @@ function LecturerCard({ lecturer, semesterSubjects, getSubjectLecturers, toggleS
 export function SemesterDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const {
-    semesters, subjects, lecturers, setModal, remove,
+  const { 
+    semesters, subjects, lecturers, 
+    setModal, remove, setNotice,
+    semesterLecturers, setSemesterLecturers,
     assignLecturersToSubject, getSubjectLecturers
   } = useOutletContext()
 
@@ -301,30 +304,42 @@ export function SemesterDetail() {
   const totalLab = useMemo(() => semesterSubjects.reduce((sum, s) => sum + s.lab_hours, 0), [semesterSubjects])
 
   // ── Teaching Staff ──────────────────────────────────────────────────────────
-  const staffKey = `semester_staff_${id}`
-  const [staffIds, setStaffIds] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(staffKey) || '[]') }
-    catch { return [] }
-  })
+  // Derive staffIds from DB-backed semesterLecturers for this specific semester
+  const staffIds = useMemo(() => {
+    return semesterLecturers.filter(sl => sl.semester_id === id).map(sl => sl.lecturer_id)
+  }, [semesterLecturers, id])
 
-  const saveStaff = (ids) => {
-    setStaffIds(ids)
-    localStorage.setItem(staffKey, JSON.stringify(ids))
-  }
-
-  const addLecturerToSemester = (lecturerId) => {
+  const addLecturerToSemester = async (lecturerId) => {
     if (!lecturerId || staffIds.includes(lecturerId)) return
-    saveStaff([...staffIds, lecturerId])
+    
+    // Optimistic local update
+    setSemesterLecturers([...semesterLecturers, { semester_id: id, lecturer_id: lecturerId }])
+    
+    // Sync to DB
+    const { error } = await supabase.from('semester_lecturers').insert([{ semester_id: id, lecturer_id: lecturerId }])
+    if (error) setNotice(`Failed to add lecturer: ${error.message}`, 'error')
   }
 
-  const removeLecturerFromSemester = (lecturerId) => {
+  const removeLecturerFromSemester = async (lecturerId) => {
+    // 1. Remove them from all subjects in this semester
     semesterSubjects.forEach(sub => {
       const current = getSubjectLecturers(sub.id).map(l => l.id)
       if (current.includes(lecturerId)) {
         assignLecturersToSubject(sub.id, current.filter(id => id !== lecturerId))
       }
     })
-    saveStaff(staffIds.filter(id => id !== lecturerId))
+    
+    // 2. Remove them from the semester staff pool
+    // Optimistic local update
+    setSemesterLecturers(semesterLecturers.filter(sl => !(sl.semester_id === id && sl.lecturer_id === lecturerId)))
+    
+    // Sync to DB
+    const { error } = await supabase.from('semester_lecturers')
+      .delete()
+      .eq('semester_id', id)
+      .eq('lecturer_id', lecturerId)
+      
+    if (error) setNotice(`Failed to remove lecturer: ${error.message}`, 'error')
   }
 
   const toggleSubjectForLecturer = (lecturerId, subjectId) => {

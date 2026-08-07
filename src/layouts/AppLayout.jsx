@@ -13,6 +13,11 @@ export function AppLayout() {
   const [classes, setClasses] = useState([])
   const [academicYears, setAcademicYears] = useState([])
   const [departments, setDepartments] = useState([])
+  
+  // New DB-backed states replacing local storage maps
+  const [subjectLecturers, setSubjectLecturers] = useState([])
+  const [semesterLecturers, setSemesterLecturers] = useState([])
+  
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState(null) // { msg, type: 'success' | 'error' }
   const notify = (msg, type = 'success') => setNotice({ msg, type })
@@ -32,13 +37,15 @@ export function AppLayout() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes] = await Promise.all([
+      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes, subLecRes, semLecRes] = await Promise.all([
         supabase.from('semesters').select('*').order('name', { ascending: false }),
         supabase.from('subjects').select('*').order('name'),
         supabase.from('lecturers').select('*').order('name'),
         supabase.from('classes').select('*').order('name'),
         supabase.from('academic_years').select('*').order('year', { ascending: false }),
-        supabase.from('departments').select('*').order('name')
+        supabase.from('departments').select('*').order('name'),
+        supabase.from('subject_lecturers').select('*'),
+        supabase.from('semester_lecturers').select('*')
       ])
       if (semRes.error) throw semRes.error
       if (subRes.error) throw subRes.error
@@ -46,6 +53,9 @@ export function AppLayout() {
       if (clsRes.error) throw clsRes.error
       if (yrRes.error) throw yrRes.error
       if (deptRes.error) throw deptRes.error
+      
+      if (subLecRes.error) console.error("Could not load subject_lecturers:", subLecRes.error)
+      if (semLecRes.error) console.warn("Could not load semester_lecturers. Did you run the SQL migration?", semLecRes.error)
       
       const loadedClasses = clsRes.data || []
       const yearSemMap = getYearSemesterMap(loadedClasses)
@@ -67,6 +77,8 @@ export function AppLayout() {
       setClasses(syncedClasses)
       setAcademicYears((yrRes.data || []).map(y => y.year))
       setDepartments(deptRes.data || [])
+      setSubjectLecturers(subLecRes.data || [])
+      setSemesterLecturers(semLecRes.data || [])
     } catch (err) {
       notify(`Could not load data: ${err.message}`, 'error')
     }
@@ -111,34 +123,17 @@ export function AppLayout() {
     ['Total Classes', classes.length, 'group', 'bg-[#ef7f61]'],
   ]
 
-  const [subjectLecturersMap, setSubjectLecturersMap] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('subject_lecturers_map') || '{}')
-    } catch {
-      return {}
-    }
-  })
-
-  const [lecturerSubjectsMap, setLecturerSubjectsMap] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('lecturer_subjects_map') || '{}')
-    } catch {
-      return {}
-    }
-  })
-
-  const saveLecturerTaughtSubjects = (lecturerId, taughtSubjects) => {
-    const updated = {
-      ...lecturerSubjectsMap,
-      [lecturerId]: taughtSubjects
-    }
-    setLecturerSubjectsMap(updated)
-    localStorage.setItem('lecturer_subjects_map', JSON.stringify(updated))
+  // Taught subjects logic directly modifies lecturer state and DB
+  const saveLecturerTaughtSubjects = async (lecturerId, taughtSubjects) => {
+    // Optimistic local state update
+    setLecturers(prev => prev.map(l => l.id === lecturerId ? { ...l, taught_subjects: taughtSubjects } : l))
+    
+    // Sync to DB
+    const { error } = await supabase.from('lecturers').update({ taught_subjects: taughtSubjects }).eq('id', lecturerId)
+    if (error) notify(error.message, 'error')
   }
 
   const getLecturerTaughtSubjects = (lecturerId) => {
-    const list = lecturerSubjectsMap[lecturerId]
-    if (Array.isArray(list)) return list
     const lecturer = lecturers.find(l => l.id === lecturerId)
     if (lecturer && Array.isArray(lecturer.taught_subjects)) return lecturer.taught_subjects
     return []
@@ -150,38 +145,44 @@ export function AppLayout() {
     return taught.includes(subject.name) || taught.includes(subject.code)
   }
 
-  const saveSubjectLecturersMap = (newMap) => {
-    setSubjectLecturersMap(newMap)
-    localStorage.setItem('subject_lecturers_map', JSON.stringify(newMap))
-  }
-
   const assignLecturersToSubject = async (subjectId, lecturerIds) => {
-    // Optimistic local update — no full page reload
-    const updatedMap = {
-      ...subjectLecturersMap,
-      [subjectId]: {
-        ...subjectLecturersMap[subjectId],
-        lecturer_ids: lecturerIds
-      }
-    }
-    saveSubjectLecturersMap(updatedMap)
+    // Optimistic local update for subjectLecturers junction
+    const currentOthers = subjectLecturers.filter(sl => sl.subject_id !== subjectId)
+    const newAssignments = lecturerIds.map(id => ({ subject_id: subjectId, lecturer_id: id }))
+    setSubjectLecturers([...currentOthers, ...newAssignments])
 
-    // Also update subjects state locally so stats refresh instantly
+    // Also update subjects state locally so stats refresh instantly (primary lecturer)
+    const primaryId = lecturerIds.length > 0 ? lecturerIds[0] : null
     setSubjects(prev => prev.map(s =>
-      s.id === subjectId ? { ...s, lecturer_id: lecturerIds[0] || null } : s
+      s.id === subjectId ? { ...s, lecturer_id: primaryId } : s
     ))
 
-    // Sync to DB in background (no await on page render path)
-    const primaryId = lecturerIds.length > 0 ? lecturerIds[0] : null
+    // Sync to DB in background
+    // 1. Update primary lecturer on subjects table
     supabase.from('subjects').update({ lecturer_id: primaryId }).eq('id', subjectId)
       .then(({ error }) => { if (error) notify(error.message, 'error') })
+      
+    // 2. Replace all subject_lecturers rows for this subject
+    const { error: delError } = await supabase.from('subject_lecturers').delete().eq('subject_id', subjectId)
+    if (delError) {
+      notify(delError.message, 'error')
+      return
+    }
+    
+    if (newAssignments.length > 0) {
+      const { error: insError } = await supabase.from('subject_lecturers').insert(newAssignments)
+      if (insError) notify(insError.message, 'error')
+    }
   }
 
   const getSubjectLecturers = (subjectId) => {
-    const entry = subjectLecturersMap[subjectId]
-    if (entry && Array.isArray(entry.lecturer_ids)) {
-      return lecturers.filter(l => entry.lecturer_ids.includes(l.id))
+    // Read from DB-backed state
+    const assignedIds = subjectLecturers.filter(sl => sl.subject_id === subjectId).map(sl => sl.lecturer_id)
+    if (assignedIds.length > 0) {
+      return lecturers.filter(l => assignedIds.includes(l.id))
     }
+    
+    // Fallback to single primary lecturer if junction table is empty
     const sub = subjects.find(s => s.id === subjectId)
     if (sub && sub.lecturer_id) {
       const dbL = lecturers.find(l => l.id === sub.lecturer_id)
@@ -262,8 +263,9 @@ export function AppLayout() {
           <Outlet context={{ 
             semesters, subjects, lecturers, classes, academicYears, departments,
             setModal, remove, metrics, loadData, setNotice: notify, 
-            subjectLecturersMap, assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
-            lecturerSubjectsMap, saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
+            subjectLecturers, semesterLecturers, setSemesterLecturers,
+            assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
+            saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
           }} />
         )}
       </main>
