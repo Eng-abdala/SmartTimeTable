@@ -13,15 +13,12 @@ export function AppLayout() {
   const [classes, setClasses] = useState([])
   const [academicYears, setAcademicYears] = useState([])
   const [departments, setDepartments] = useState([])
-  
-  // New DB-backed states replacing local storage maps
-  const [subjectLecturers, setSubjectLecturers] = useState([])
   const [semesterLecturers, setSemesterLecturers] = useState([])
-  
+
   const [loading, setLoading] = useState(true)
-  const [notice, setNotice] = useState(null) // { msg, type: 'success' | 'error' }
+  const [notice, setNotice] = useState(null)
   const notify = (msg, type = 'success') => setNotice({ msg, type })
-  
+
   useEffect(() => {
     if (notice) {
       const timer = setTimeout(() => setNotice(null), 3000)
@@ -30,21 +27,19 @@ export function AppLayout() {
   }, [notice])
 
   const [modal, setModal] = useState(null)
-  
   const location = useLocation()
   const navigate = useNavigate()
 
   const loadData = async () => {
     setLoading(true)
     try {
-      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes, subLecRes, semLecRes] = await Promise.all([
+      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes, semLecRes] = await Promise.all([
         supabase.from('semesters').select('*').order('name', { ascending: false }),
         supabase.from('subjects').select('*').order('name'),
         supabase.from('lecturers').select('*').order('name'),
         supabase.from('classes').select('*').order('name'),
         supabase.from('academic_years').select('*').order('year', { ascending: false }),
         supabase.from('departments').select('*').order('name'),
-        supabase.from('subject_lecturers').select('*'),
         supabase.from('semester_lecturers').select('*')
       ])
       if (semRes.error) throw semRes.error
@@ -53,31 +48,27 @@ export function AppLayout() {
       if (clsRes.error) throw clsRes.error
       if (yrRes.error) throw yrRes.error
       if (deptRes.error) throw deptRes.error
-      
-      if (subLecRes.error) console.error("Could not load subject_lecturers:", subLecRes.error)
-      if (semLecRes.error) console.warn("Could not load semester_lecturers. Did you run the SQL migration?", semLecRes.error)
-      
+      if (semLecRes.error) console.warn('Could not load semester_lecturers:', semLecRes.error)
+
       const loadedClasses = clsRes.data || []
       const yearSemMap = getYearSemesterMap(loadedClasses)
-      
-      // Auto-sync any classes that don't match their Academic Year's semester
       const syncedClasses = loadedClasses.map(c => {
         if (c.intake_year && yearSemMap[c.intake_year] && c.semester_id !== yearSemMap[c.intake_year]) {
           const correctSem = yearSemMap[c.intake_year]
-          // Sync DB in background
           supabase.from('classes').update({ semester_id: correctSem }).eq('id', c.id)
           return { ...c, semester_id: correctSem }
         }
         return c
       })
 
+      const loadedSubjects = subRes.data || []
+
       setSemesters(semRes.data || [])
-      setSubjects(subRes.data || [])
+      setSubjects(loadedSubjects)
       setLecturers(lecRes.data || [])
       setClasses(syncedClasses)
       setAcademicYears((yrRes.data || []).map(y => y.year))
       setDepartments(deptRes.data || [])
-      setSubjectLecturers(subLecRes.data || [])
       setSemesterLecturers(semLecRes.data || [])
     } catch (err) {
       notify(`Could not load data: ${err.message}`, 'error')
@@ -123,88 +114,96 @@ export function AppLayout() {
     ['Total Classes', classes.length, 'group', 'bg-[#ef7f61]'],
   ]
 
-  // Taught subjects logic directly modifies lecturer state and DB
+  const [subjectLecturers, setSubjectLecturers] = useState([])
+
+  // ── taught_subjects helpers ────────────────────────────────────────────────
   const saveLecturerTaughtSubjects = async (lecturerId, taughtSubjects) => {
-    // Optimistic local state update
     setLecturers(prev => prev.map(l => l.id === lecturerId ? { ...l, taught_subjects: taughtSubjects } : l))
-    
-    // Sync to DB
     const { error } = await supabase.from('lecturers').update({ taught_subjects: taughtSubjects }).eq('id', lecturerId)
-    if (error) notify(error.message, 'error')
+    if (error) console.warn('Could not update taught_subjects:', error.message)
   }
 
   const getLecturerTaughtSubjects = (lecturerId) => {
     const lecturer = lecturers.find(l => l.id === lecturerId)
-    if (lecturer && Array.isArray(lecturer.taught_subjects)) return lecturer.taught_subjects
-    return []
+    return Array.isArray(lecturer?.taught_subjects) ? lecturer.taught_subjects : []
   }
 
   const isLecturerQualified = (lecturer, subject) => {
     const taught = getLecturerTaughtSubjects(lecturer.id)
-    if (!taught || taught.length === 0) return false
-    return taught.includes(subject.name) || taught.includes(subject.code)
+    return taught.includes(subject.id) || taught.includes(subject.name) || taught.includes(subject.code)
+  }
+
+  // ── Multi-Lecturer Assignment Engine using lecturers.taught_subjects ────────
+  const getSubjectLecturers = (subjectId) => {
+    const sub = subjects.find(s => s.id === subjectId)
+    const assignedByTaught = lecturers.filter(l =>
+      Array.isArray(l.taught_subjects) &&
+      (l.taught_subjects.includes(subjectId) || (sub && (l.taught_subjects.includes(sub.name) || l.taught_subjects.includes(sub.code))))
+    )
+    if (sub && sub.lecturer_id) {
+      const primaryL = lecturers.find(l => l.id === sub.lecturer_id)
+      if (primaryL && !assignedByTaught.some(l => l.id === primaryL.id)) {
+        assignedByTaught.push(primaryL)
+      }
+    }
+    return assignedByTaught
   }
 
   const assignLecturersToSubject = async (subjectId, lecturerIds) => {
-    // Optimistic local update for subjectLecturers junction
-    const currentOthers = subjectLecturers.filter(sl => sl.subject_id !== subjectId)
-    const newAssignments = lecturerIds.map(id => ({ subject_id: subjectId, lecturer_id: id }))
-    setSubjectLecturers([...currentOthers, ...newAssignments])
+    const targetSet = new Set((lecturerIds || []).filter(Boolean))
+    const primaryId = targetSet.size > 0 ? Array.from(targetSet)[0] : null
 
-    // Also update subjects state locally so stats refresh instantly (primary lecturer)
-    const primaryId = lecturerIds.length > 0 ? lecturerIds[0] : null
-    setSubjects(prev => prev.map(s =>
-      s.id === subjectId ? { ...s, lecturer_id: primaryId } : s
-    ))
+    // 1. Update subjects.lecturer_id with primary lecturer in state & DB
+    setSubjects(prev => prev.map(s => s.id === subjectId ? { ...s, lecturer_id: primaryId } : s))
+    try {
+      await supabase.from('subjects').update({ lecturer_id: primaryId }).eq('id', subjectId)
+    } catch (e) {
+      console.warn("Could not update subjects.lecturer_id:", e.message)
+    }
 
-    // Sync to DB in background
-    // 1. Update primary lecturer on subjects table
-    supabase.from('subjects').update({ lecturer_id: primaryId }).eq('id', subjectId)
-      .then(({ error }) => { if (error) notify(error.message, 'error') })
-      
-    // 2. Replace all subject_lecturers rows for this subject
-    const { error: delError } = await supabase.from('subject_lecturers').delete().eq('subject_id', subjectId)
-    if (delError) {
-      notify(delError.message, 'error')
-      return
-    }
-    
-    if (newAssignments.length > 0) {
-      const { error: insError } = await supabase.from('subject_lecturers').insert(newAssignments)
-      if (insError) notify(insError.message, 'error')
-    }
-  }
-
-  const getSubjectLecturers = (subjectId) => {
-    // Read from DB-backed state
-    const assignedIds = subjectLecturers.filter(sl => sl.subject_id === subjectId).map(sl => sl.lecturer_id)
-    if (assignedIds.length > 0) {
-      return lecturers.filter(l => assignedIds.includes(l.id))
-    }
-    
-    // Fallback to single primary lecturer if junction table is empty
+    // 2. Update taught_subjects on all lecturers in state & DB
     const sub = subjects.find(s => s.id === subjectId)
-    if (sub && sub.lecturer_id) {
-      const dbL = lecturers.find(l => l.id === sub.lecturer_id)
-      return dbL ? [dbL] : []
+    
+    for (const lecturer of lecturers) {
+      const currentTaught = Array.isArray(lecturer.taught_subjects) ? lecturer.taught_subjects : []
+      const isTarget = targetSet.has(lecturer.id)
+      const hasSub = currentTaught.includes(subjectId) || (sub && (currentTaught.includes(sub.name) || currentTaught.includes(sub.code)))
+
+      let newTaught = null
+      if (isTarget && !hasSub) {
+        newTaught = [...currentTaught, subjectId]
+      } else if (!isTarget && hasSub) {
+        newTaught = currentTaught.filter(item => item !== subjectId && (sub ? item !== sub.name && item !== sub.code : true))
+      }
+
+      if (newTaught !== null) {
+        // Optimistic local update
+        setLecturers(prev => prev.map(l => l.id === lecturer.id ? { ...l, taught_subjects: newTaught } : l))
+
+        // Save to DB
+        try {
+          const { error } = await supabase.from('lecturers').update({ taught_subjects: newTaught }).eq('id', lecturer.id)
+          if (error) console.warn("Failed to update taught_subjects for lecturer:", error.message)
+        } catch (err) {
+          console.warn("Error updating taught_subjects:", err.message)
+        }
+      }
     }
-    return []
   }
 
+  // Deterministic lecturer pick per (subject + class) for timetable generation
   const getRandomLecturerForClass = (subjectId, classId) => {
-    const subjectLecturersList = getSubjectLecturers(subjectId)
-    if (!subjectLecturersList || subjectLecturersList.length === 0) return null
-    if (subjectLecturersList.length === 1) return subjectLecturersList[0]
+    const list = getSubjectLecturers(subjectId)
+    if (!list || list.length === 0) return null
+    if (list.length === 1) return list[0]
 
-    // Deterministic random hash per (subjectId + classId) combination
     let hash = 0
     const str = (subjectId || '') + (classId || '')
     for (let i = 0; i < str.length; i++) {
       hash = (hash << 5) - hash + str.charCodeAt(i)
       hash |= 0
     }
-    const index = Math.abs(hash) % subjectLecturersList.length
-    return subjectLecturersList[index]
+    return list[Math.abs(hash) % list.length]
   }
 
   return (
@@ -221,8 +220,8 @@ export function AppLayout() {
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-5 lg:block lg:space-y-1">
           {nav.map(([label, icon, path]) => (
-            <NavLink 
-              key={label} 
+            <NavLink
+              key={label}
               to={path}
               className={({ isActive }) => `flex min-w-max items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition lg:w-full ${isActive ? 'bg-brand-600 text-white shadow-lg shadow-black/10' : 'text-cyan-50/70 hover:bg-white/10 hover:text-white'}`}
             >
@@ -235,8 +234,8 @@ export function AppLayout() {
 
       <main className="min-w-0 flex-1 p-5 sm:p-8 lg:ml-64">
         {location.pathname !== '/' && (
-          <button 
-            onClick={() => navigate(-1)} 
+          <button
+            onClick={() => navigate(-1)}
             className="mb-6 inline-flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-50 hover:text-brand-600 transition shadow-sm border border-slate-200 hover:border-brand-200"
           >
             <Icon name="back" className="h-4 w-4" /> Go Back
@@ -256,23 +255,24 @@ export function AppLayout() {
             <button onClick={() => setNotice(null)} className="ml-4 rounded p-1 text-lg leading-none opacity-60 hover:opacity-100">×</button>
           </div>
         )}
-        
+
         {loading ? (
           <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">Loading timetable data…</div>
         ) : (
-          <Outlet context={{ 
+          <Outlet context={{
             semesters, subjects, lecturers, classes, academicYears, departments,
-            setModal, remove, metrics, loadData, setNotice: notify, 
-            subjectLecturers, semesterLecturers, setSemesterLecturers,
-            assignLecturersToSubject, getSubjectLecturers, getRandomLecturerForClass,
-            saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified 
+            setModal, remove, metrics, loadData, setNotice: notify,
+            semesterLecturers, setSemesterLecturers,
+            assignLecturersToSubject,
+            getSubjectLecturers, getRandomLecturerForClass,
+            saveLecturerTaughtSubjects, getLecturerTaughtSubjects, isLecturerQualified
           }} />
         )}
       </main>
-      
+
       {modal && (
-        <Modal 
-          modal={modal} 
+        <Modal
+          modal={modal}
           semester={modal.semester}
           semesters={semesters}
           subjects={subjects}
@@ -280,8 +280,8 @@ export function AppLayout() {
           classes={classes}
           getLecturerTaughtSubjects={getLecturerTaughtSubjects}
           saveLecturerTaughtSubjects={saveLecturerTaughtSubjects}
-          onClose={() => setModal(null)} 
-          onSave={save} 
+          onClose={() => setModal(null)}
+          onSave={save}
         />
       )}
     </div>

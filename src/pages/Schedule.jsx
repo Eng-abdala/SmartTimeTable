@@ -98,17 +98,29 @@ function exportTableToExcel(tableElement, filename) {
   a.download = `${filename}.xls`
   document.body.appendChild(a)
   a.click()
-  document.body.removeChild(a)
   URL.revokeObjectURL(url)
 }
 
+function getSlotTimeLabel(shift, slotIndex) {
+  if (shift === 'Afternoon') {
+    const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM']
+    return slots[slotIndex] || `Slot ${slotIndex + 1}`
+  } else {
+    if (slotIndex === 4) return '7:00–7:45 AM'
+    const slots = ['7:45–8:45 AM', '8:45–9:45 AM', '10:15–11:15 AM', '11:15 AM–12:15 PM']
+    return slots[slotIndex] || `Slot ${slotIndex + 1}`
+  }
+}
+
 export function Schedule() {
-  const { classes, semesters, setNotice } = useOutletContext()
+  const { classes, semesters, lecturers = [], setNotice } = useOutletContext()
   const navigate = useNavigate()
   const printRef = useRef()
 
+  const [activeTab, setActiveTab] = useState('classes') // 'classes' | 'lecturers'
   const [selectedSemesterId, setSelectedSemesterId] = useState(() => semesters[0]?.id || '')
   const [selectedShift, setSelectedShift] = useState('All') // 'All', 'Morning', 'Afternoon'
+  const [selectedLecturerId, setSelectedLecturerId] = useState('All') // 'All' or specific lecturer id
   const [timetablesData, setTimetablesData] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -161,6 +173,106 @@ export function Schedule() {
     return map
   }, [timetablesData, selectedSemesterId])
 
+  // Map lecturerId -> day -> slotIndex -> array of { classObj, subject, type, slotIndex }
+  const lecturerScheduleMap = useMemo(() => {
+    const map = {}
+
+    semesterClasses.forEach(cls => {
+      const grid = timetablesByClass[cls.id]
+      if (!grid) return
+
+      DAYS.forEach(day => {
+        if (!grid[day]) return
+        grid[day].forEach(session => {
+          if (session.lecturer && session.lecturer.id) {
+            const lid = session.lecturer.id
+            if (!map[lid]) {
+              map[lid] = { Saturday: {}, Sunday: {}, Monday: {}, Tuesday: {}, Wednesday: {} }
+            }
+            if (!map[lid][day][session.slotIndex]) {
+              map[lid][day][session.slotIndex] = []
+            }
+            map[lid][day][session.slotIndex].push({
+              classObj: cls,
+              subject: session.subject,
+              type: session.type,
+              slotIndex: session.slotIndex
+            })
+          }
+        })
+      })
+    })
+
+    return map
+  }, [semesterClasses, timetablesByClass])
+
+  // Active lecturers who have assignments in this semester / shift
+  const activeLecturers = useMemo(() => {
+    const activeIds = new Set(Object.keys(lecturerScheduleMap))
+    const list = lecturers.filter(l => activeIds.has(l.id))
+    return list.sort((a, b) => a.name.localeCompare(b.name))
+  }, [lecturers, lecturerScheduleMap])
+
+  const morningLecturers = useMemo(() => {
+    const ids = new Set()
+    morningClasses.forEach(cls => {
+      const grid = timetablesByClass[cls.id]
+      if (!grid) return
+      DAYS.forEach(day => {
+        if (grid[day]) {
+          grid[day].forEach(s => {
+            if (s.lecturer?.id) ids.add(s.lecturer.id)
+          })
+        }
+      })
+    })
+    return activeLecturers.filter(l => ids.has(l.id))
+  }, [activeLecturers, morningClasses, timetablesByClass])
+
+  const afternoonLecturers = useMemo(() => {
+    const ids = new Set()
+    afternoonClasses.forEach(cls => {
+      const grid = timetablesByClass[cls.id]
+      if (!grid) return
+      DAYS.forEach(day => {
+        if (grid[day]) {
+          grid[day].forEach(s => {
+            if (s.lecturer?.id) ids.add(s.lecturer.id)
+          })
+        }
+      })
+    })
+    return activeLecturers.filter(l => ids.has(l.id))
+  }, [activeLecturers, afternoonClasses, timetablesByClass])
+
+  // Helper: get ordered sessions for a lecturer on a day
+  const getLecturerDaySessions = (lecId, day) => {
+    const dayMap = lecturerScheduleMap[lecId]?.[day]
+    if (!dayMap) return []
+    
+    const result = []
+    const slotKeys = Object.keys(dayMap).map(Number)
+    
+    slotKeys.sort((a, b) => {
+      if (a === 4) return -1
+      if (b === 4) return 1
+      return a - b
+    })
+
+    slotKeys.forEach(slotIdx => {
+      const sessions = dayMap[slotIdx]
+      const isClash = sessions.length > 1
+      sessions.forEach(s => {
+        result.push({
+          ...s,
+          isClash,
+          timeLabel: getSlotTimeLabel(s.classObj.shift || selectedShift, s.slotIndex)
+        })
+      })
+    })
+    return result
+  }
+
   // Detect teacher clashes across classes
   const conflicts = useMemo(() => {
     const clashList = []
@@ -212,10 +324,11 @@ export function Schedule() {
   const handleDownloadPdf = () => {
     const el = printRef.current
     const semName = semesters.find(s => s.id === selectedSemesterId)?.name || 'Semester'
+    const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
     html2pdf()
       .set({
         margin: 6,
-        filename: `Schedule_${semName.replace(/\s+/g, '_')}.pdf`,
+        filename: `Schedule_${tabName}_${semName.replace(/\s+/g, '_')}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true },
         jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' },
@@ -227,13 +340,13 @@ export function Schedule() {
   const handleExportExcel = () => {
     const el = printRef.current
     const semName = semesters.find(s => s.id === selectedSemesterId)?.name || 'Semester'
-    const filename = `Schedule_${semName.replace(/\s+/g, '_')}`
+    const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
+    const filename = `Schedule_${tabName}_${semName.replace(/\s+/g, '_')}`
     exportTableToExcel(el, filename)
-    setNotice('Master Schedule exported to Excel successfully!', 'success')
+    setNotice(`Master ${tabName} Schedule exported to Excel successfully!`, 'success')
   }
 
-  // Renders the master schedule grid for a given shift.
-  // For morning: dynamically adds the 7:00 AM early row per day when any class has >4 sessions.
+  // Renders the master schedule grid for Classes.
   const renderGridTable = (classList, shiftName, slots) => {
     if (!classList.length) return null
 
@@ -284,13 +397,10 @@ export function Schedule() {
 
             <tbody className="divide-y divide-black bg-white">
               {DAYS.map(day => {
-                // Build the row list for this day
                 let daySlots
                 if (isMorning) {
                   const hasOverflow = dayHasOverflow[day]
                   if (hasOverflow) {
-                    // Overflow day: 7:00 AM early slot + 4 standard slots + break
-                    // slotIndex mapping: 0→7:00AM, 1→7:45AM, 2→8:45AM, (break), 3→10:15AM, 4→11:15AM
                     daySlots = [
                       { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
                       { slotIndex: 1, time: '7:45 AM – 8:45 AM' },
@@ -300,7 +410,6 @@ export function Schedule() {
                       { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
                     ]
                   } else {
-                    // Normal day: 4 standard slots + break, starting 7:45 AM
                     daySlots = [
                       { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
                       { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
@@ -319,7 +428,6 @@ export function Schedule() {
                       const isBreak = slot.isBreak
                       return (
                         <tr key={`${day}_${slot.time}`} className="border-b border-black">
-                          {/* Day Column (Spans all slots for the day) */}
                           {slotIdx === 0 && (
                             <td
                               rowSpan={daySlots.length}
@@ -329,12 +437,10 @@ export function Schedule() {
                             </td>
                           )}
 
-                          {/* Time Column */}
                           <td className="border-r border-black bg-white px-2 py-2 text-center font-medium text-slate-900 time-col whitespace-nowrap">
                             {slot.time}
                           </td>
 
-                          {/* Class Columns */}
                           {classList.map(cls => {
                             if (isBreak) {
                               return (
@@ -397,6 +503,265 @@ export function Schedule() {
     )
   }
 
+  // Professional Lecturer Table: Rows = Lecturers, Columns = Days
+  const renderLecturerRowsTable = (lecturerList) => {
+    if (!lecturerList.length) return null
+
+    return (
+      <div className="mb-8">
+        <div className="overflow-x-auto rounded-xl border border-black bg-white shadow-xs">
+          <table className="w-full min-w-[950px] border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-black bg-[#ffff00]">
+                <th className="border-r border-black px-4 py-3.5 font-bold text-black w-48 corner-header">
+                  Lecturer Name
+                </th>
+                {DAYS.map(day => (
+                  <th key={day} className="border-r border-black px-3 py-3.5 text-center font-bold text-black">
+                    {day}
+                  </th>
+                ))}
+                <th className="px-3 py-3.5 text-center font-bold text-black w-24">
+                  Total Load
+                </th>
+              </tr>
+            </thead>
+
+            <tbody className="divide-y divide-black bg-white">
+              {lecturerList.map((lec, idx) => {
+                let totalPeriods = 0
+                DAYS.forEach(day => {
+                  const dayMap = lecturerScheduleMap[lec.id]?.[day]
+                  if (dayMap) {
+                    Object.values(dayMap).forEach(arr => totalPeriods += arr.length)
+                  }
+                })
+
+                return (
+                  <tr key={lec.id} className="border-b border-black hover:bg-slate-50/60 transition">
+                    {/* Lecturer Info Column */}
+                    <td className="border-r border-black px-4 py-3.5 font-semibold text-brand-950 align-top w-48 bg-white">
+                      <div className="flex items-start gap-2.5">
+                        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-bold text-white shadow-xs">
+                          {lec.name.charAt(0)}
+                        </div>
+                        <div>
+                          <button
+                            onClick={() => setSelectedLecturerId(lec.id)}
+                            className="font-bold text-brand-950 hover:text-brand-600 text-left transition text-xs"
+                            title="Click to view individual schedule for this lecturer"
+                          >
+                            {lec.name}
+                          </button>
+                          <div className="text-[10px] text-slate-500 font-normal mt-0.5">
+                            ID: {lec.lecturer_id || 'N/A'}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+
+                    {/* Days Columns (Sat - Wed) */}
+                    {DAYS.map(day => {
+                      const sessions = getLecturerDaySessions(lec.id, day)
+
+                      return (
+                        <td key={day} className="border-r border-black px-2 py-2.5 align-top text-center min-w-[130px]">
+                          {sessions.length === 0 ? (
+                            <span className="inline-block py-2 text-slate-300 italic text-xs">—</span>
+                          ) : (
+                            <div className="space-y-1.5 text-left">
+                              {sessions.map((s, sIdx) => {
+                                const style = getSubjectStyle(s.subject?.id)
+                                return (
+                                  <div
+                                    key={`${s.classObj.id}_${s.slotIndex}_${sIdx}`}
+                                    style={{
+                                      backgroundColor: s.isClash ? '#fee2e2' : style.bg,
+                                      color: s.isClash ? '#991b1b' : style.text
+                                    }}
+                                    className={`rounded-lg p-2 text-xs border border-black/10 shadow-2xs leading-snug transition ${
+                                      s.isClash ? 'ring-2 ring-red-500 font-bold' : ''
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1 font-bold text-[11px]">
+                                      <span className="truncate">{s.classObj.name}</span>
+                                      <span className="shrink-0 text-[9.5px] font-semibold opacity-85 bg-black/5 px-1 rounded">
+                                        {s.timeLabel.split('–')[0]}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10.5px] font-medium truncate mt-0.5 opacity-90">
+                                      {s.subject?.name || 'Subject'}
+                                    </div>
+                                    {s.isClash && (
+                                      <div className="mt-1 text-[9px] font-bold text-red-700 uppercase tracking-wider">
+                                        ⚠️ Clash
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </td>
+                      )
+                    })}
+
+                    {/* Total Load Column */}
+                    <td className="px-3 py-3.5 text-center font-bold align-middle w-24">
+                      <span className="inline-flex items-center justify-center rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-700 border border-brand-200">
+                        {totalPeriods} hrs
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  // Renders individual schedule for a single lecturer.
+  const renderSingleLecturerSchedule = (lec) => {
+    if (!lec) return null
+
+    let totalPeriods = 0
+    const classesTaughtSet = new Set()
+    
+    DAYS.forEach(day => {
+      const dayMap = lecturerScheduleMap[lec.id]?.[day]
+      if (dayMap) {
+        Object.values(dayMap).forEach(sessions => {
+          totalPeriods += sessions.length
+          sessions.forEach(s => classesTaughtSet.add(s.classObj.name))
+        })
+      }
+    })
+
+    const slotsToUse = selectedShift === 'Afternoon' ? AFTERNOON_SLOTS : MORNING_STANDARD_SLOTS
+
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+          <div className="flex items-center gap-4">
+            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-600 text-white font-bold text-lg shadow-md shadow-brand-600/20">
+              {lec.name.charAt(0)}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-bold text-brand-950">{lec.name}</h2>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
+                  {lec.lecturer_id || 'Lecturer'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Availability: {lec.is_all_week ? 'Available all week' : (lec.available_days || []).join(', ')}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6 text-sm">
+            <div className="text-center">
+              <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Scheduled Periods</span>
+              <span className="text-lg font-bold text-brand-600">{totalPeriods} / week</span>
+            </div>
+            <div className="h-8 w-px bg-slate-200"></div>
+            <div className="text-center">
+              <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Classes Taught</span>
+              <span className="text-lg font-bold text-slate-800">
+                {classesTaughtSet.size > 0 ? Array.from(classesTaughtSet).join(', ') : 'None'}
+              </span>
+            </div>
+            <button
+              onClick={() => setSelectedLecturerId('All')}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition"
+            >
+              ← Back to All Lecturers
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-black bg-white shadow-xs">
+          <table className="w-full min-w-[700px] border-collapse text-center text-xs">
+            <thead>
+              <tr className="border-b border-black bg-[#ffff00]">
+                <th className="border-r border-black px-4 py-3 text-center font-bold text-black w-36">Time</th>
+                {DAYS.map(day => (
+                  <th key={day} className="border-r border-black px-4 py-3 text-center font-bold text-black">
+                    {day}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-black bg-white">
+              {slotsToUse.map(slot => {
+                if (slot.isBreak) {
+                  return (
+                    <tr key={slot.time} className="border-b border-black bg-amber-50">
+                      <td className="border-r border-black px-3 py-2 font-medium text-slate-900 whitespace-nowrap">{slot.time}</td>
+                      <td colSpan={DAYS.length} className="px-3 py-2 text-center text-amber-900 font-semibold">☕ Break</td>
+                    </tr>
+                  )
+                }
+
+                return (
+                  <tr key={slot.time} className="border-b border-black">
+                    <td className="border-r border-black bg-white px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap text-xs">
+                      {slot.time}
+                    </td>
+                    {DAYS.map(day => {
+                      const sessions = lecturerScheduleMap[lec.id]?.[day]?.[slot.slotIndex] || []
+
+                      if (sessions.length === 0) {
+                        return (
+                          <td key={day} className="border-r border-black px-3 py-2.5 text-center text-slate-300 italic">
+                            —
+                          </td>
+                        )
+                      }
+
+                      if (sessions.length === 1) {
+                        const session = sessions[0]
+                        const style = getSubjectStyle(session.subject?.id)
+                        return (
+                          <td
+                            key={day}
+                            style={{ backgroundColor: style.bg, color: style.text }}
+                            className="border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs"
+                          >
+                            <div className="font-bold">{session.classObj.name}</div>
+                            <div className="text-[11px] opacity-90">{session.subject?.name || 'Subject'}</div>
+                          </td>
+                        )
+                      }
+
+                      return (
+                        <td
+                          key={day}
+                          style={{ backgroundColor: '#fee2e2', color: '#991b1b' }}
+                          className="border-r border-black px-3 py-2.5 text-center align-middle font-bold text-xs ring-2 ring-red-500"
+                        >
+                          <div>{sessions.map(s => `${s.classObj.name} (${s.subject?.code || s.subject?.name})`).join(', ')}</div>
+                          <div className="mt-1 text-[9px] font-bold text-red-700 uppercase">⚠️ Clash</div>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  const selectedLecturerObj = useMemo(() => {
+    if (selectedLecturerId === 'All') return null
+    return lecturers.find(l => l.id === selectedLecturerId)
+  }, [lecturers, selectedLecturerId])
+
   return (
     <>
       <header className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
@@ -405,14 +770,14 @@ export function Schedule() {
             Master Schedule
           </h1>
           <p className="mt-1 text-xs text-slate-500">
-            View all class timetables in a clean Excel grid layout
+            View all class and lecturer timetables in clean Excel grid layouts
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleExportExcel}
-            disabled={!semesterClasses.length}
+            disabled={activeTab === 'classes' ? !semesterClasses.length : !activeLecturers.length}
             className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-800 shadow-xs transition hover:bg-emerald-100 disabled:opacity-50"
           >
             <span>📊</span>
@@ -421,7 +786,7 @@ export function Schedule() {
 
           <button
             onClick={handleDownloadPdf}
-            disabled={!semesterClasses.length}
+            disabled={activeTab === 'classes' ? !semesterClasses.length : !activeLecturers.length}
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-xs transition hover:bg-slate-50 disabled:opacity-50"
           >
             <Icon name="print" className="h-4 w-4 text-slate-500" />
@@ -430,7 +795,7 @@ export function Schedule() {
 
           <button
             onClick={handlePrint}
-            disabled={!semesterClasses.length}
+            disabled={activeTab === 'classes' ? !semesterClasses.length : !activeLecturers.length}
             className="inline-flex items-center gap-1.5 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-xs transition hover:bg-brand-700 disabled:opacity-50"
           >
             <Icon name="print" className="h-4 w-4" />
@@ -439,7 +804,33 @@ export function Schedule() {
         </div>
       </header>
 
-      {/* Filter Bar: Semester & Shift selection only (No extra buttons) */}
+      {/* Main Navigation Tabs: Classes Timetable vs Lecturers Timetable */}
+      <div className="mb-6 flex border-b border-slate-200">
+        <button
+          onClick={() => { setActiveTab('classes'); setSelectedLecturerId('All') }}
+          className={`flex items-center gap-2 border-b-2 px-5 py-3 text-sm font-bold transition ${
+            activeTab === 'classes'
+              ? 'border-brand-600 text-brand-600'
+              : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+          }`}
+        >
+          <Icon name="group" className="h-4 w-4" />
+          Classes Timetable ({semesterClasses.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('lecturers')}
+          className={`flex items-center gap-2 border-b-2 px-5 py-3 text-sm font-bold transition ${
+            activeTab === 'lecturers'
+              ? 'border-brand-600 text-brand-600'
+              : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+          }`}
+        >
+          <Icon name="users" className="h-4 w-4" />
+          Lecturers Timetable ({activeLecturers.length})
+        </button>
+      </div>
+
+      {/* Filter Bar */}
       <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
         <div className="flex flex-wrap items-center gap-6">
           <div className="flex items-center gap-3">
@@ -467,18 +858,41 @@ export function Schedule() {
               onChange={e => setSelectedShift(e.target.value)}
               className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
             >
+              <option value="All">All Shifts</option>
               <option value="Morning">Morning Shift</option>
               <option value="Afternoon">Afternoon Shift</option>
             </select>
           </div>
 
+          {activeTab === 'lecturers' && (
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Lecturer:
+              </label>
+              <select
+                value={selectedLecturerId}
+                onChange={e => setSelectedLecturerId(e.target.value)}
+                className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
+              >
+                <option value="All">All Lecturers (Table View)</option>
+                {activeLecturers.map(l => (
+                  <option key={l.id} value={l.id}>{l.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="ml-auto text-xs text-slate-500 font-medium">
-            Classes: <b className="text-slate-900">{semesterClasses.length}</b>
+            {activeTab === 'classes' ? (
+              <>Classes: <b className="text-slate-900">{semesterClasses.length}</b></>
+            ) : (
+              <>Active Lecturers: <b className="text-slate-900">{activeLecturers.length}</b></>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Conflict Warning Banner (Only if clashes exist) */}
+      {/* Conflict Warning Banner */}
       {conflicts.clashList.length > 0 && (
         <div className="mb-6 rounded-xl border border-red-300 bg-red-50 p-3.5 text-red-900 text-xs">
           <span className="font-bold">⚠️ {conflicts.clashList.length} Teacher Conflict(s) Found: </span>
@@ -486,26 +900,51 @@ export function Schedule() {
         </div>
       )}
 
-      {/* Schedule Table Container */}
-      {!semesterClasses.length ? (
-        <Empty
-          title="No classes found for this selection"
-          text="Ensure you have assigned classes to this semester in the Classes management page."
-        />
-      ) : (
-        <div ref={printRef}>
-          {selectedShift === 'All' ? (
-            <>
-              {renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)}
-              {renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)}
-            </>
-          ) : selectedShift === 'Morning' ? (
-            renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)
+      {/* Schedule Content */}
+      <div ref={printRef}>
+        {activeTab === 'classes' ? (
+          !semesterClasses.length ? (
+            <Empty
+              title="No classes found for this selection"
+              text="Ensure you have assigned classes to this semester in the Classes management page."
+            />
           ) : (
-            renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)
-          )}
-        </div>
-      )}
+            <>
+              {selectedShift === 'All' ? (
+                <>
+                  {renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)}
+                  {renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)}
+                </>
+              ) : selectedShift === 'Morning' ? (
+                renderGridTable(morningClasses, 'Morning', MORNING_STANDARD_SLOTS)
+              ) : (
+                renderGridTable(afternoonClasses, 'Afternoon', AFTERNOON_SLOTS)
+              )}
+            </>
+          )
+        ) : (
+          /* Lecturers Tab */
+          selectedLecturerId !== 'All' && selectedLecturerObj ? (
+            renderSingleLecturerSchedule(selectedLecturerObj)
+          ) : !activeLecturers.length ? (
+            <Empty
+              title="No lecturer schedules found for this selection"
+              text="Generate timetables for classes in this semester using the Timetable page first."
+            />
+          ) : (
+            <>
+              {selectedShift === 'All' ? (
+                renderLecturerRowsTable(activeLecturers)
+              ) : selectedShift === 'Morning' ? (
+                renderLecturerRowsTable(morningLecturers)
+              ) : (
+                renderLecturerRowsTable(afternoonLecturers)
+              )}
+            </>
+          )
+        )}
+      </div>
     </>
   )
 }
+

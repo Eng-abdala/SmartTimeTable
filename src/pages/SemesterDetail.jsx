@@ -304,10 +304,12 @@ export function SemesterDetail() {
   const totalLab = useMemo(() => semesterSubjects.reduce((sum, s) => sum + s.lab_hours, 0), [semesterSubjects])
 
   // ── Teaching Staff ──────────────────────────────────────────────────────────
-  // Derive staffIds from DB-backed semesterLecturers for this specific semester
+  // Derive staffIds from DB-backed semesterLecturers + any lecturers assigned to subjects in this semester
   const staffIds = useMemo(() => {
-    return semesterLecturers.filter(sl => sl.semester_id === id).map(sl => sl.lecturer_id)
-  }, [semesterLecturers, id])
+    const explicitStaff = semesterLecturers.filter(sl => sl.semester_id === id).map(sl => sl.lecturer_id)
+    const subjectStaff = semesterSubjects.flatMap(sub => getSubjectLecturers(sub.id).map(l => l.id))
+    return Array.from(new Set([...explicitStaff, ...subjectStaff]))
+  }, [semesterLecturers, id, semesterSubjects, getSubjectLecturers])
 
   const addLecturerToSemester = async (lecturerId) => {
     if (!lecturerId || staffIds.includes(lecturerId)) return
@@ -343,12 +345,20 @@ export function SemesterDetail() {
   }
 
   const toggleSubjectForLecturer = (lecturerId, subjectId) => {
-    const currentLecturers = getSubjectLecturers(subjectId).map(l => l.id)
-    if (currentLecturers.includes(lecturerId)) {
-      assignLecturersToSubject(subjectId, currentLecturers.filter(id => id !== lecturerId))
+    const currentAssignedIds = getSubjectLecturers(subjectId).map(l => l.id)
+    const isAlreadyAssigned = currentAssignedIds.includes(lecturerId)
+
+    let updatedIds
+    if (isAlreadyAssigned) {
+      // Remove ONLY this lecturer from the subject
+      updatedIds = currentAssignedIds.filter(id => id !== lecturerId)
     } else {
-      assignLecturersToSubject(subjectId, [...currentLecturers, lecturerId])
+      // Add this lecturer to the subject alongside any existing lecturers
+      updatedIds = Array.from(new Set([...currentAssignedIds, lecturerId]))
+      addLecturerToSemester(lecturerId)
     }
+
+    assignLecturersToSubject(subjectId, updatedIds)
   }
 
   const staffLecturers = useMemo(() => lecturers.filter(l => staffIds.includes(l.id)), [lecturers, staffIds])
