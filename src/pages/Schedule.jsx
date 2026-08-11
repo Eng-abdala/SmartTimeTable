@@ -173,7 +173,7 @@ export function Schedule() {
     return map
   }, [timetablesData, selectedSemesterId])
 
-  // Map lecturerId -> day -> slotIndex -> array of { classObj, subject, type, slotIndex }
+  // Map lecturerId -> day -> `${shift}_${slotIndex}` -> array of { classObj, subject, type, slotIndex }
   const lecturerScheduleMap = useMemo(() => {
     const map = {}
 
@@ -182,17 +182,18 @@ export function Schedule() {
       if (!grid) return
 
       DAYS.forEach(day => {
-        if (!grid[day]) return
+        if (!grid[day] || !Array.isArray(grid[day])) return
         grid[day].forEach(session => {
-          if (session.lecturer && session.lecturer.id) {
+          if (session && session.lecturer && session.lecturer.id) {
             const lid = session.lecturer.id
             if (!map[lid]) {
               map[lid] = { Saturday: {}, Sunday: {}, Monday: {}, Tuesday: {}, Wednesday: {} }
             }
-            if (!map[lid][day][session.slotIndex]) {
-              map[lid][day][session.slotIndex] = []
+            const key = `${cls.shift || 'Morning'}_${session.slotIndex}`
+            if (!map[lid][day][key]) {
+              map[lid][day][key] = []
             }
-            map[lid][day][session.slotIndex].push({
+            map[lid][day][key].push({
               classObj: cls,
               subject: session.subject,
               type: session.type,
@@ -219,9 +220,9 @@ export function Schedule() {
       const grid = timetablesByClass[cls.id]
       if (!grid) return
       DAYS.forEach(day => {
-        if (grid[day]) {
+        if (grid[day] && Array.isArray(grid[day])) {
           grid[day].forEach(s => {
-            if (s.lecturer?.id) ids.add(s.lecturer.id)
+            if (s?.lecturer?.id) ids.add(s.lecturer.id)
           })
         }
       })
@@ -235,9 +236,9 @@ export function Schedule() {
       const grid = timetablesByClass[cls.id]
       if (!grid) return
       DAYS.forEach(day => {
-        if (grid[day]) {
+        if (grid[day] && Array.isArray(grid[day])) {
           grid[day].forEach(s => {
-            if (s.lecturer?.id) ids.add(s.lecturer.id)
+            if (s?.lecturer?.id) ids.add(s.lecturer.id)
           })
         }
       })
@@ -251,29 +252,38 @@ export function Schedule() {
     if (!dayMap) return []
     
     const result = []
-    const slotKeys = Object.keys(dayMap).map(Number)
+    const keys = Object.keys(dayMap)
     
-    slotKeys.sort((a, b) => {
-      if (a === 4) return -1
-      if (b === 4) return 1
-      return a - b
+    keys.sort((a, b) => {
+      const [shiftA, idxAStr] = a.split('_')
+      const [shiftB, idxBStr] = b.split('_')
+      if (shiftA !== shiftB) {
+        return shiftA === 'Morning' ? -1 : 1
+      }
+      const idxA = Number(idxAStr)
+      const idxB = Number(idxBStr)
+      if (idxA === 4) return -1
+      if (idxB === 4) return 1
+      return idxA - idxB
     })
 
-    slotKeys.forEach(slotIdx => {
-      const sessions = dayMap[slotIdx]
-      const isClash = sessions.length > 1
-      sessions.forEach(s => {
-        result.push({
-          ...s,
-          isClash,
-          timeLabel: getSlotTimeLabel(s.classObj.shift || selectedShift, s.slotIndex)
+    keys.forEach(key => {
+      const sessions = dayMap[key]
+      if (Array.isArray(sessions)) {
+        const isClash = sessions.length > 1
+        sessions.forEach(s => {
+          result.push({
+            ...s,
+            isClash,
+            timeLabel: getSlotTimeLabel(s.classObj.shift || selectedShift, s.slotIndex)
+          })
         })
-      })
+      }
     })
     return result
   }
 
-  // Detect teacher clashes across classes
+  // Detect teacher clashes across classes in the SAME shift
   const conflicts = useMemo(() => {
     const clashList = []
     const clashCellKeys = new Set()
@@ -281,37 +291,41 @@ export function Schedule() {
     DAYS.forEach(day => {
       const slotIndices = [0, 1, 2, 3, 4]
       
-      slotIndices.forEach(slotIdx => {
-        const lecturerMap = {}
+      const shifts = ['Morning', 'Afternoon']
+      shifts.forEach(shift => {
+        slotIndices.forEach(slotIdx => {
+          const lecturerMap = {}
 
-        semesterClasses.forEach(cls => {
-          const grid = timetablesByClass[cls.id]
-          if (!grid || !grid[day]) return
+          semesterClasses.filter(c => (c.shift || 'Morning') === shift).forEach(cls => {
+            const grid = timetablesByClass[cls.id]
+            if (!grid || !grid[day] || !Array.isArray(grid[day])) return
 
-          const session = grid[day].find(s => s.slotIndex === slotIdx)
-          if (session && session.lecturer) {
-            const lid = session.lecturer.id
-            if (!lecturerMap[lid]) lecturerMap[lid] = []
-            lecturerMap[lid].push({ classObj: cls, session })
-          }
-        })
+            const session = grid[day].find(s => s && s.slotIndex === slotIdx)
+            if (session && session.lecturer && session.lecturer.id) {
+              const lid = session.lecturer.id
+              if (!lecturerMap[lid]) lecturerMap[lid] = []
+              lecturerMap[lid].push({ classObj: cls, session })
+            }
+          })
 
-        Object.entries(lecturerMap).forEach(([lid, assignments]) => {
-          if (assignments.length > 1) {
-            const lecturerName = assignments[0].session.lecturer.name
-            const classNames = assignments.map(a => a.classObj.name).join(', ')
-            
-            clashList.push({
-              day,
-              slotIdx,
-              lecturerId: lid,
-              lecturerName,
-              classes: assignments.map(a => a.classObj),
-              classNames
-            })
+          Object.entries(lecturerMap).forEach(([lid, assignments]) => {
+            if (assignments.length > 1) {
+              const lecturerName = assignments[0].session.lecturer.name
+              const classNames = assignments.map(a => a.classObj.name).join(', ')
+              
+              clashList.push({
+                day,
+                shift,
+                slotIdx,
+                lecturerId: lid,
+                lecturerName,
+                classes: assignments.map(a => a.classObj),
+                classNames
+              })
 
-            clashCellKeys.add(`${day}_${slotIdx}_${lid}`)
-          }
+              clashCellKeys.add(`${day}_${shift}_${slotIdx}_${lid}`)
+            }
+          })
         })
       })
     })
@@ -462,7 +476,7 @@ export function Schedule() {
                             }
 
                             const { subject, lecturer } = session
-                            const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${slot.slotIndex}_${lecturer.id}`)
+                            const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${cls.shift || 'Morning'}_${slot.slotIndex}_${lecturer.id}`)
                             const style = getSubjectStyle(subject?.id)
 
                             const cellText = `${subject?.name || 'Subject'}${lecturer ? ' - ' + lecturer.name : ''}`
@@ -639,7 +653,7 @@ export function Schedule() {
       }
     })
 
-    const slotsToUse = selectedShift === 'Afternoon' ? AFTERNOON_SLOTS : MORNING_STANDARD_SLOTS
+    const shiftsToRender = selectedShift === 'All' ? ['Morning', 'Afternoon'] : [selectedShift]
 
     return (
       <div className="space-y-6">
@@ -682,77 +696,89 @@ export function Schedule() {
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-black bg-white shadow-xs">
-          <table className="w-full min-w-[700px] border-collapse text-center text-xs">
-            <thead>
-              <tr className="border-b border-black bg-[#ffff00]">
-                <th className="border-r border-black px-4 py-3 text-center font-bold text-black w-36">Time</th>
-                {DAYS.map(day => (
-                  <th key={day} className="border-r border-black px-4 py-3 text-center font-bold text-black">
-                    {day}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-black bg-white">
-              {slotsToUse.map(slot => {
-                if (slot.isBreak) {
-                  return (
-                    <tr key={slot.time} className="border-b border-black bg-amber-50">
-                      <td className="border-r border-black px-3 py-2 font-medium text-slate-900 whitespace-nowrap">{slot.time}</td>
-                      <td colSpan={DAYS.length} className="px-3 py-2 text-center text-amber-900 font-semibold">☕ Break</td>
+        {shiftsToRender.map(shiftName => {
+          const slotsToUse = shiftName === 'Afternoon' ? AFTERNOON_SLOTS : MORNING_STANDARD_SLOTS
+          return (
+            <div key={shiftName} className="space-y-2">
+              <div className="flex items-center gap-2 font-bold text-slate-800 text-sm">
+                <span className={`h-2.5 w-2.5 rounded-full ${shiftName === 'Morning' ? 'bg-amber-500' : 'bg-indigo-600'}`}></span>
+                {shiftName} Shift Schedule
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-black bg-white shadow-xs">
+                <table className="w-full min-w-[700px] border-collapse text-center text-xs">
+                  <thead>
+                    <tr className="border-b border-black bg-[#ffff00]">
+                      <th className="border-r border-black px-4 py-3 text-center font-bold text-black w-36">Time</th>
+                      {DAYS.map(day => (
+                        <th key={day} className="border-r border-black px-4 py-3 text-center font-bold text-black">
+                          {day}
+                        </th>
+                      ))}
                     </tr>
-                  )
-                }
-
-                return (
-                  <tr key={slot.time} className="border-b border-black">
-                    <td className="border-r border-black bg-white px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap text-xs">
-                      {slot.time}
-                    </td>
-                    {DAYS.map(day => {
-                      const sessions = lecturerScheduleMap[lec.id]?.[day]?.[slot.slotIndex] || []
-
-                      if (sessions.length === 0) {
+                  </thead>
+                  <tbody className="divide-y divide-black bg-white">
+                    {slotsToUse.map(slot => {
+                      if (slot.isBreak) {
                         return (
-                          <td key={day} className="border-r border-black px-3 py-2.5 text-center text-slate-300 italic">
-                            —
-                          </td>
-                        )
-                      }
-
-                      if (sessions.length === 1) {
-                        const session = sessions[0]
-                        const style = getSubjectStyle(session.subject?.id)
-                        return (
-                          <td
-                            key={day}
-                            style={{ backgroundColor: style.bg, color: style.text }}
-                            className="border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs"
-                          >
-                            <div className="font-bold">{session.classObj.name}</div>
-                            <div className="text-[11px] opacity-90">{session.subject?.name || 'Subject'}</div>
-                          </td>
+                          <tr key={slot.time} className="border-b border-black bg-amber-50">
+                            <td className="border-r border-black px-3 py-2 font-medium text-slate-900 whitespace-nowrap">{slot.time}</td>
+                            <td colSpan={DAYS.length} className="px-3 py-2 text-center text-amber-900 font-semibold">☕ Break</td>
+                          </tr>
                         )
                       }
 
                       return (
-                        <td
-                          key={day}
-                          style={{ backgroundColor: '#fee2e2', color: '#991b1b' }}
-                          className="border-r border-black px-3 py-2.5 text-center align-middle font-bold text-xs ring-2 ring-red-500"
-                        >
-                          <div>{sessions.map(s => `${s.classObj.name} (${s.subject?.code || s.subject?.name})`).join(', ')}</div>
-                          <div className="mt-1 text-[9px] font-bold text-red-700 uppercase">⚠️ Clash</div>
-                        </td>
+                        <tr key={slot.time} className="border-b border-black">
+                          <td className="border-r border-black bg-white px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap text-xs">
+                            {slot.time}
+                          </td>
+                          {DAYS.map(day => {
+                            const key = `${shiftName}_${slot.slotIndex}`
+                            const sessions = lecturerScheduleMap[lec.id]?.[day]?.[key] || []
+
+                            if (sessions.length === 0) {
+                              return (
+                                <td key={day} className="border-r border-black px-3 py-2.5 text-center text-slate-300 italic">
+                                  —
+                                </td>
+                              )
+                            }
+
+                            if (sessions.length === 1) {
+                              const session = sessions[0]
+                              const style = getSubjectStyle(session.subject?.id)
+                              return (
+                                <td
+                                  key={day}
+                                  style={{ backgroundColor: style.bg, color: style.text }}
+                                  className="border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs"
+                                >
+                                  <div className="font-bold">{session.classObj.name}</div>
+                                  <div className="text-[11px] opacity-90">{session.subject?.name || 'Subject'}</div>
+                                </td>
+                              )
+                            }
+
+                            return (
+                              <td
+                                key={day}
+                                style={{ backgroundColor: '#fee2e2', color: '#991b1b' }}
+                                className="border-r border-black px-3 py-2.5 text-center align-middle font-bold text-xs ring-2 ring-red-500"
+                              >
+                                <div>{sessions.map(s => `${s.classObj.name} (${s.subject?.code || s.subject?.name})`).join(', ')}</div>
+                                <div className="mt-1 text-[9px] font-bold text-red-700 uppercase">⚠️ Clash</div>
+                              </td>
+                            )
+                          })}
+                        </tr>
                       )
                     })}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        })}
       </div>
     )
   }

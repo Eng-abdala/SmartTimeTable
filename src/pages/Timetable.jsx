@@ -487,7 +487,7 @@ export function Timetable() {
           const savedClass = classes.find(c => c.id === savedClassId)
 
           DAYS.forEach(day => {
-            if (savedGrid[day]) {
+            if (savedGrid && savedGrid[day] && Array.isArray(savedGrid[day])) {
               savedGrid[day].forEach(session => {
                 if (session.lecturer) {
                   const lid = session.lecturer.id
@@ -496,13 +496,12 @@ export function Timetable() {
                   if (!classCountMap[lid]) classCountMap[lid] = new Set()
                   classCountMap[lid].add(savedClassId)
 
-                  // Track daily load REGARDLESS of shift (max 3 periods across whole day)
-                  if (!dailyLoad[lid]) dailyLoad[lid] = {}
-                  dailyLoad[lid][day] = (dailyLoad[lid][day] || 0) + 1
-
-                  // Only check physical time clashes against classes in the SAME SHIFT. 
+                  // Track daily load for classes in the SAME SHIFT (max 3 periods per shift per day)
                   const isSameShift = !savedClass || savedClass.shift === selectedClass.shift
                   if (isSameShift) {
+                    if (!dailyLoad[lid]) dailyLoad[lid] = {}
+                    dailyLoad[lid][day] = (dailyLoad[lid][day] || 0) + 1
+
                     if (!busyMap[lid]) busyMap[lid] = {}
                     if (!busyMap[lid][day]) busyMap[lid][day] = {}
                     busyMap[lid][day][session.slotIndex] = true
@@ -935,7 +934,7 @@ export function Timetable() {
                                   ))}
                                 </select>
                               ) : (
-                                session.lecturer ? session.lecturer.name : ''
+                                session.lecturer ? session.lecturer.name : <span className="italic text-slate-400">No Lecture</span>
                               )}
                             </td>
                             <td className="border border-black px-3 py-1.5 text-center align-middle">
