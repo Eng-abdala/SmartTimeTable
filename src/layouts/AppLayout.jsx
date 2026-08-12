@@ -51,22 +51,12 @@ export function AppLayout() {
       if (semLecRes.error) console.warn('Could not load semester_lecturers:', semLecRes.error)
 
       const loadedClasses = clsRes.data || []
-      const yearSemMap = getYearSemesterMap(loadedClasses)
-      const syncedClasses = loadedClasses.map(c => {
-        if (c.intake_year && yearSemMap[c.intake_year] && c.semester_id !== yearSemMap[c.intake_year]) {
-          const correctSem = yearSemMap[c.intake_year]
-          supabase.from('classes').update({ semester_id: correctSem }).eq('id', c.id)
-          return { ...c, semester_id: correctSem }
-        }
-        return c
-      })
-
       const loadedSubjects = subRes.data || []
 
       setSemesters(semRes.data || [])
       setSubjects(loadedSubjects)
       setLecturers(lecRes.data || [])
-      setClasses(syncedClasses)
+      setClasses(loadedClasses)
       setAcademicYears((yrRes.data || []).map(y => y.year))
       setDepartments(deptRes.data || [])
       setSemesterLecturers(semLecRes.data || [])

@@ -9,16 +9,16 @@ const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
 const SHIFT_SLOTS = {
   Morning: [
-    { id: 1, label: 'Period 1', time: '8:00 AM – 9:30 AM' },
-    { id: 2, label: 'Period 2', time: '9:30 AM – 11:00 AM' },
-    { id: 'break', label: '☕ Break', time: '11:00 – 11:30 AM', isBreak: true },
-    { id: 3, label: 'Period 3', time: '11:30 AM – 1:00 PM' },
+    { id: 1, label: 'Period 1', time: '8:00 AM – 9:20 AM' },
+    { id: 2, label: 'Period 2', time: '9:20 AM – 10:40 AM' },
+    { id: 'break', label: '☕ Break', time: '10:40 AM – 10:55 AM', isBreak: true },
+    { id: 3, label: 'Period 3', time: '10:55 AM – 12:15 PM' },
   ],
   Afternoon: [
-    { id: 1, label: 'Period 1', time: '1:00 PM – 2:30 PM' },
-    { id: 2, label: 'Period 2', time: '2:30 PM – 3:30 PM' },
-    { id: 'break', label: '☕ Break', time: '3:30 PM – 4:00 PM', isBreak: true },
-    { id: 3, label: 'Period 3', time: '4:00 PM – 5:00 PM' },
+    { id: 1, label: 'Period 1', time: '1:00 PM – 2:20 PM' },
+    { id: 2, label: 'Period 2', time: '2:20 PM – 3:40 PM' },
+    { id: 'break', label: '☕ Break', time: '3:40 PM – 3:55 PM', isBreak: true },
+    { id: 3, label: 'Period 3', time: '3:55 PM – 5:15 PM' },
   ],
 }
 
@@ -74,7 +74,13 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     const allQualified = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
     
     // Filter out lecturers who are ALREADY teaching another subject in this same class
-    const availableForThisClass = allQualified.filter(l => !usedLecturersInClass.has(l.id))
+    // OR who have already reached the maximum limit of 3 classes in total.
+    const availableForThisClass = allQualified.filter(l => {
+      if (usedLecturersInClass.has(l.id)) return false
+      const currentClassCount = classCountMap?.[l.id]?.size || 0
+      if (currentClassCount >= 3) return false
+      return true
+    })
     const pool = availableForThisClass.length > 0 ? availableForThisClass : allQualified
 
     // Sort candidate pool:
@@ -391,9 +397,22 @@ export function Timetable() {
 
   useEffect(() => { loadSavedTimetableMap() }, [])
 
+  // When navigating via URL classId, auto-select that class's semester
+  useEffect(() => {
+    if (!urlClassId || !classes.length) return
+    const cls = classes.find(c => c.id === urlClassId)
+    if (cls?.semester_id) {
+      setSelectedSemesterId(cls.semester_id)
+      setSelectedClassId(urlClassId)
+    }
+  }, [urlClassId, classes])
+
   // Load timetable on mount if URL has classId
   useEffect(() => {
     if (urlClassId && selectedSemesterId) {
+      const cls = classes.find(c => c.id === urlClassId)
+      // Only load if semester matches the class's own semester
+      if (!cls || cls.semester_id !== selectedSemesterId) return
       ;(async () => {
         const { data } = await supabase
           .from('timetables')
@@ -409,7 +428,7 @@ export function Timetable() {
         }
       })()
     }
-  }, [urlClassId, selectedSemesterId])
+  }, [urlClassId, selectedSemesterId, classes])
 
   // Persist selections to localStorage
   const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v); saveClass('') }
@@ -547,6 +566,10 @@ export function Timetable() {
   }
 
   const handleReset = () => {
+    if (searchParams.has('classId')) {
+      navigate(-1)
+      return
+    }
     setSearchParams({})
     setSelectedSemesterId(''); setSelectedClassId('')
     setTimetable(null); setGenerated(false)

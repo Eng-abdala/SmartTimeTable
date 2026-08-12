@@ -113,22 +113,26 @@ function getSlotTimeLabel(shift, slotIndex) {
 }
 
 export function Schedule() {
-  const { classes, semesters, lecturers = [], setNotice } = useOutletContext()
+  const { classes, semesters, lecturers = [], setNotice, academicYears } = useOutletContext()
   const navigate = useNavigate()
   const printRef = useRef()
 
   const [activeTab, setActiveTab] = useState('classes') // 'classes' | 'lecturers'
-  const [selectedSemesterId, setSelectedSemesterId] = useState(() => semesters[0]?.id || '')
+  // Use academic year instead of single semester — shows all depts together
+  const [selectedYear, setSelectedYear] = useState(() => {
+    const years = [...(academicYears || [])].sort((a, b) => b - a)
+    return years[0] || ''
+  })
   const [selectedShift, setSelectedShift] = useState('All') // 'All', 'Morning', 'Afternoon'
   const [selectedLecturerId, setSelectedLecturerId] = useState('All') // 'All' or specific lecturer id
   const [timetablesData, setTimetablesData] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!selectedSemesterId && semesters.length > 0) {
-      setSelectedSemesterId(semesters[0].id)
+    if (!selectedYear && academicYears?.length > 0) {
+      setSelectedYear([...academicYears].sort((a, b) => b - a)[0])
     }
-  }, [semesters, selectedSemesterId])
+  }, [academicYears, selectedYear])
 
   // Fetch timetables directly from Supabase DB
   const loadTimetables = async () => {
@@ -148,30 +152,28 @@ export function Schedule() {
 
   useEffect(() => {
     loadTimetables()
-  }, [selectedSemesterId])
+  }, [selectedYear])
 
-  // Filter classes by semester & shift
+  // Filter classes by academic YEAR (includes ALL departments: CA, CM, CN) & shift
   const semesterClasses = useMemo(() => {
-    if (!selectedSemesterId) return []
+    if (!selectedYear) return []
     return classes
-      .filter(c => c.semester_id === selectedSemesterId)
+      .filter(c => c.intake_year === Number(selectedYear))
       .filter(c => selectedShift === 'All' || c.shift === selectedShift)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-  }, [classes, selectedSemesterId, selectedShift])
+  }, [classes, selectedYear, selectedShift])
 
   const morningClasses = useMemo(() => semesterClasses.filter(c => c.shift === 'Morning'), [semesterClasses])
   const afternoonClasses = useMemo(() => semesterClasses.filter(c => c.shift === 'Afternoon'), [semesterClasses])
 
-  // Map classId -> grid timetable object
+  // Map classId -> grid timetable object (from ANY semester, just match by classId)
   const timetablesByClass = useMemo(() => {
     const map = {}
     timetablesData.forEach(row => {
-      if (row.semester_id === selectedSemesterId) {
-        map[row.class_id] = row.grid
-      }
+      map[row.class_id] = row.grid
     })
     return map
-  }, [timetablesData, selectedSemesterId])
+  }, [timetablesData])
 
   // Map lecturerId -> day -> `${shift}_${slotIndex}` -> array of { classObj, subject, type, slotIndex }
   const lecturerScheduleMap = useMemo(() => {
@@ -337,12 +339,11 @@ export function Schedule() {
 
   const handleDownloadPdf = () => {
     const el = printRef.current
-    const semName = semesters.find(s => s.id === selectedSemesterId)?.name || 'Semester'
     const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
     html2pdf()
       .set({
         margin: 6,
-        filename: `Schedule_${tabName}_${semName.replace(/\s+/g, '_')}.pdf`,
+        filename: `Schedule_${tabName}_Class_of_${selectedYear}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true },
         jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' },
@@ -353,9 +354,8 @@ export function Schedule() {
 
   const handleExportExcel = () => {
     const el = printRef.current
-    const semName = semesters.find(s => s.id === selectedSemesterId)?.name || 'Semester'
     const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
-    const filename = `Schedule_${tabName}_${semName.replace(/\s+/g, '_')}`
+    const filename = `Schedule_${tabName}_Class_of_${selectedYear}`
     exportTableToExcel(el, filename)
     setNotice(`Master ${tabName} Schedule exported to Excel successfully!`, 'success')
   }
@@ -861,16 +861,16 @@ export function Schedule() {
         <div className="flex flex-wrap items-center gap-6">
           <div className="flex items-center gap-3">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Semester:
+              Academic Year:
             </label>
             <select
-              value={selectedSemesterId}
-              onChange={e => setSelectedSemesterId(e.target.value)}
+              value={selectedYear}
+              onChange={e => setSelectedYear(Number(e.target.value))}
               className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
             >
-              {!semesters.length && <option value="">No Semesters</option>}
-              {semesters.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
+              {!(academicYears?.length) && <option value="">No Years</option>}
+              {[...(academicYears || [])].sort((a, b) => b - a).map(yr => (
+                <option key={yr} value={yr}>Class of {yr}</option>
               ))}
             </select>
           </div>

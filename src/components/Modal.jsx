@@ -11,6 +11,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
   const initialTaught = lecturerId && getLecturerTaughtSubjects ? getLecturerTaughtSubjects(lecturerId) : (modal.data?.taught_subjects || [])
   const deptContext = typeof modal === 'object' ? modal.department : null
   const intakeYearContext = typeof modal === 'object' ? modal.intakeYear : null
+  const prefillDepartment = typeof modal === 'object' ? modal.prefillDepartment : null
   const classPrefix = deptContext && intakeYearContext ? `${deptContext.shortform}${String(intakeYearContext).slice(-2)}` : ''
 
   // Compute the semester this academic year already has locked in
@@ -39,7 +40,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       semester_id: yearInheritedSemesterId || null,
       department_id: deptContext ? deptContext.id : null
     } : 
-    { name: '' }
+    { name: '', department: prefillDepartment || '' }
   )
 
   const [formError, setFormError] = useState('')
@@ -107,6 +108,24 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       }
     }
 
+    // (Code generation moved below so it can pick up the appended department for semesters)
+
+    if (type === 'semester') {
+      const match = dbPayload.name?.match(/\d+/)
+      const isHigh = match && parseInt(match[0], 10) >= 4
+      if (!isHigh) {
+        delete dbPayload.department
+      } else if (!dbPayload.department) {
+        setFormError('Department is required for Semester 4 and above.')
+        return
+      } else {
+        // Append department to name so it stays unique in the database
+        if (!dbPayload.name.includes(dbPayload.department)) {
+          dbPayload.name = `${dbPayload.name.trim()} (${dbPayload.department})`
+        }
+      }
+    }
+
     // Auto-generate code from name if missing (classes, semesters, subjects all have a NOT NULL code column)
     if ((type === 'class' || type === 'semester' || type === 'subject') && !dbPayload.code) {
       dbPayload.code = (dbPayload.name || '').toUpperCase().replace(/\s+/g, '-').slice(0, 20)
@@ -153,7 +172,35 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
         <div className="space-y-4">
           {type === 'semester' && (
             <>
-              <Field label="Semester Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Semester 6 - Spring 2026" />
+              <Field label="Semester Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Semester 6" />
+              {prefillDepartment ? (
+                // Department is pre-set from the section button — show locked badge
+                <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  <span className="text-sm font-semibold text-slate-500">Department:</span>
+                  <span className="rounded-full bg-brand-100 px-3 py-0.5 text-sm font-bold text-brand-700">{prefillDepartment}</span>
+                  <span className="text-xs text-slate-400">(pre-selected)</span>
+                </div>
+              ) : (() => {
+                const match = form.name?.match(/\d+/)
+                const isHigh = match && parseInt(match[0], 10) >= 4
+                if (!isHigh) return null
+                return (
+                  <label className="block text-sm font-semibold text-brand-950">
+                    Department
+                    <select
+                      required
+                      value={form.department || ''}
+                      onChange={e => change('department', e.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-normal text-slate-700 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-600/10"
+                    >
+                      <option value="">-- Select Department --</option>
+                      <option value="CA">Computer Application (CA)</option>
+                      <option value="CN">Computer Networking (CN)</option>
+                      <option value="CM">Computer Multimedia (CM)</option>
+                    </select>
+                  </label>
+                )
+              })()}
             </>
           )}
           
