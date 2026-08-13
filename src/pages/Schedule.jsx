@@ -366,13 +366,18 @@ export function Schedule() {
 
     const isMorning = shiftName === 'Morning'
 
-    // For morning: compute per-day whether ANY class has an overflow session (slotIndex 4)
-    const dayHasOverflow = {}
+    // Compute per-class per-day overflow (slotIndex 4 present = overflow)
+    const classOverflowMap = {} // { classId: { day: boolean } }
+    const dayHasOverflow = {}   // { day: boolean } — true if ANY class has overflow that day
     if (isMorning) {
-      DAYS.forEach(day => {
-        dayHasOverflow[day] = classList.some(cls => {
-          const grid = timetablesByClass[cls.id]
-          return grid && grid[day] && grid[day].some(s => s.slotIndex === 4)
+      DAYS.forEach(day => { dayHasOverflow[day] = false })
+      classList.forEach(cls => {
+        classOverflowMap[cls.id] = {}
+        const grid = timetablesByClass[cls.id]
+        DAYS.forEach(day => {
+          const hasOvf = !!(grid && grid[day] && grid[day].some(s => s.slotIndex === 4))
+          classOverflowMap[cls.id][day] = hasOvf
+          if (hasOvf) dayHasOverflow[day] = true
         })
       })
     }
@@ -411,30 +416,26 @@ export function Schedule() {
 
             <tbody className="divide-y divide-black bg-white">
               {DAYS.map(day => {
-                let daySlots
-                if (isMorning) {
-                  const hasOverflow = dayHasOverflow[day]
-                  if (hasOverflow) {
-                    daySlots = [
-                      { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
-                      { slotIndex: 1, time: '7:45 AM – 8:45 AM' },
-                      { slotIndex: 2, time: '8:45 AM – 9:45 AM' },
-                      { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
-                      { slotIndex: 3, time: '10:15 AM – 11:15 AM' },
-                      { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
-                    ]
-                  } else {
-                    daySlots = [
-                      { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
-                      { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
-                      { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
-                      { slotIndex: 2, time: '10:15 AM – 11:15 AM' },
-                      { slotIndex: 3, time: '11:15 AM – 12:15 PM' },
-                    ]
-                  }
-                } else {
-                  daySlots = slots
-                }
+                // Overflow days show 6 rows (include 7:00–7:45 early slot).
+                // Standard days show 5 rows starting at 7:45 AM.
+                const daySlots = !isMorning
+                  ? slots
+                  : dayHasOverflow[day]
+                    ? [
+                        { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
+                        { slotIndex: 1, time: '7:45 AM – 8:45 AM' },
+                        { slotIndex: 2, time: '8:45 AM – 9:45 AM' },
+                        { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
+                        { slotIndex: 3, time: '10:15 AM – 11:15 AM' },
+                        { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
+                      ]
+                    : [
+                        { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
+                        { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
+                        { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
+                        { slotIndex: 2, time: '10:15 AM – 11:15 AM' },
+                        { slotIndex: 3, time: '11:15 AM – 12:15 PM' },
+                      ]
 
                 return (
                   <React.Fragment key={day}>
@@ -464,8 +465,24 @@ export function Schedule() {
                               )
                             }
 
+                            // On overflow days (6-row layout): non-overflow classes need special handling.
+                            // - The 7:00–7:45 row (slot.slotIndex === 0) has no match → show blank.
+                            // - Rows 1–4 (7:45, 8:45, 10:15, 11:15) map to slotIndex 0–3 for non-overflow classes.
+                            const hasOverflow = isMorning ? classOverflowMap[cls.id]?.[day] : true
+                            const dayIsOverflow = isMorning && dayHasOverflow[day]
+
+                            if (dayIsOverflow && !hasOverflow && slot.slotIndex === 0) {
+                              // 7:00–7:45 row: this class has no early session
+                              return <td key={cls.id} className="border-r border-black bg-slate-50 px-2 py-2" />
+                            }
+
+                            // For non-overflow classes on an overflow day, shift slotIndex down by 1
+                            const effectiveSlot = (dayIsOverflow && !hasOverflow && slot.slotIndex > 0)
+                              ? slot.slotIndex - 1
+                              : slot.slotIndex
+
                             const grid = timetablesByClass[cls.id]
-                            const session = grid && grid[day] ? grid[day].find(s => s.slotIndex === slot.slotIndex) : null
+                            const session = grid && grid[day] ? grid[day].find(s => s.slotIndex === effectiveSlot) : null
 
                             if (!session) {
                               return (
@@ -476,9 +493,8 @@ export function Schedule() {
                             }
 
                             const { subject, lecturer } = session
-                            const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${cls.shift || 'Morning'}_${slot.slotIndex}_${lecturer.id}`)
+                            const isClashing = lecturer && conflicts.clashCellKeys.has(`${day}_${cls.shift || 'Morning'}_${effectiveSlot}_${lecturer.id}`)
                             const style = getSubjectStyle(subject?.id)
-
                             const cellText = `${subject?.name || 'Subject'}${lecturer ? ' - ' + lecturer.name : ''}`
 
                             return (
@@ -492,10 +508,7 @@ export function Schedule() {
                                   isClashing ? 'ring-2 ring-red-500 font-bold' : ''
                                 }`}
                               >
-                                <div className="leading-tight">
-                                  {cellText}
-                                </div>
-
+                                <div className="leading-tight">{cellText}</div>
                                 {isClashing && (
                                   <div className="mt-1 text-[9px] font-bold text-red-700 uppercase tracking-wider">
                                     ⚠️ Clash
