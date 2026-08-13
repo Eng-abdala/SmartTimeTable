@@ -36,7 +36,8 @@ export function Classes() {
 
   // ── Bulk Semester Assignment ───────────────────────────────────────────────
   const [bulkSemYear, setBulkSemYear] = useState(null)  // which year's modal is open
-  const [bulkSemId, setBulkSemId] = useState('')        // selected semester id
+  const [bulkSemMap, setBulkSemMap] = useState({})      // { deptCode|'ALL' -> semester_id }
+  const [bulkSemSameForAll, setBulkSemSameForAll] = useState(false) // toggle: one sem for all
   const [bulkSemLoading, setBulkSemLoading] = useState(false)
 
   // ── Academic Year CRUD ─────────────────────────────────────────────────────
@@ -80,45 +81,76 @@ export function Classes() {
     return m
   }, [yearSemesterMap])
 
-  // ── Bulk Semester Assignment for entire intake year ───────────────────────
   const [bulkSemError, setBulkSemError] = useState('')
 
+  // Detect if the year has dept-separated semesters (any class semester_id comes from a dept semester)
+  const yearHasDeptSemesters = (year) => {
+    const yearCls = classes.filter(c => c.intake_year === year)
+    return yearCls.some(c => {
+      const sem = semesters.find(s => s.id === c.semester_id)
+      return sem && sem.department
+    })
+  }
+
   const openBulkSemModal = (year) => {
-    // Pre-select the semester already assigned to this year
-    const existing = yearSemesterMap[year] || ''
-    setBulkSemId(existing)
+    const yearCls = classes.filter(c => c.intake_year === year)
+    const yearDepts = departments.filter(d => d.intake_year === year)
+    const map = {}
+    // Detect if currently using a shared general semester
+    const firstSemId = yearCls.find(c => c.semester_id)?.semester_id || ''
+    const firstSem = semesters.find(s => s.id === firstSemId)
+    const currentlyShared = !firstSem?.department
+    setBulkSemSameForAll(currentlyShared || yearDepts.length === 0)
+    if (yearDepts.length > 0) {
+      yearDepts.forEach(dept => {
+        const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
+        const existingId = deptCls.find(c => c.semester_id)?.semester_id || ''
+        const sem = semesters.find(s => s.id === existingId)
+        if (sem && sem.department === dept.shortform) {
+          map[dept.shortform] = existingId
+        } else {
+          map[dept.shortform] = ''
+        }
+      })
+    }
+    map['ALL'] = firstSemId
+    setBulkSemMap(map)
     setBulkSemError('')
     setBulkSemYear(year)
   }
 
   const applyBulkSemester = async () => {
     if (!bulkSemYear) return
-
-    // ── Uniqueness check: is this semester already claimed by another year?
-    if (bulkSemId) {
-      const ownerYear = semesterYearMap[bulkSemId]
-      if (ownerYear && ownerYear !== bulkSemYear) {
-        const semName = semesters.find(s => s.id === bulkSemId)?.name || 'that semester'
-        setBulkSemError(`${semName} is already assigned to Class of ${ownerYear}. Each semester can only belong to one academic year.`)
-        return
-      }
-    }
-
     setBulkSemError('')
     setBulkSemLoading(true)
+
+    const yearDepts = departments.filter(d => d.intake_year === bulkSemYear)
     const yearCls = classes.filter(c => c.intake_year === bulkSemYear)
-    const ids = yearCls.map(c => c.id)
-    const { error } = await supabase
-      .from('classes')
-      .update({ semester_id: bulkSemId || null })
-      .in('id', ids)
-    if (error) {
-      setNotice(error.message, 'error')
+
+    if (yearDepts.length > 0 && !bulkSemSameForAll) {
+      // Per-department mode
+      for (const dept of yearDepts) {
+        const semId = bulkSemMap[dept.shortform] || null
+        const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
+        if (deptCls.length === 0) continue
+        const { error } = await supabase
+          .from('classes')
+          .update({ semester_id: semId })
+          .in('id', deptCls.map(c => c.id))
+        if (error) { setNotice(error.message, 'error'); setBulkSemLoading(false); return }
+      }
     } else {
-      const semName = semesters.find(s => s.id === bulkSemId)?.name || 'None'
-      setNotice(`All Class-of-${bulkSemYear} classes set to ${semName}.`)
-      await loadData()
+      // Same semester for ALL classes in the year
+      const semId = bulkSemMap['ALL'] || null
+      const { error } = await supabase
+        .from('classes')
+        .update({ semester_id: semId })
+        .in('id', yearCls.map(c => c.id))
+      if (error) { setNotice(error.message, 'error'); setBulkSemLoading(false); return }
     }
+
+    setNotice(`Semesters updated for Class of ${bulkSemYear}.`)
+    await loadData()
     setBulkSemLoading(false)
     setBulkSemYear(null)
   }
@@ -425,54 +457,111 @@ export function Classes() {
   return (
     <>
       {/* ── Bulk Semester Assignment Modal ── */}
-      {bulkSemYear !== null && (
-        <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {bulkSemYear}</h2>
-              <button type="button" onClick={() => { setBulkSemYear(null); setBulkSemError('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
-            </div>
-            <p className="mb-4 text-sm text-slate-500">
-              This will update <b>all {classes.filter(c => c.intake_year === bulkSemYear).length} classes</b> in the Class of {bulkSemYear} group to the selected semester at once.
-            </p>
-            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
-              ⚠ Each semester can only be assigned to <b>one academic year</b>. Semesters already used by other years are disabled.
-            </div>
-            <label className="block text-sm font-semibold text-brand-950">
-              Semester
-              <select
-                value={bulkSemId}
-                onChange={e => { setBulkSemId(e.target.value); setBulkSemError('') }}
-                className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-              >
-                <option value="">— None —</option>
-                {[...semesters].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map(s => {
-                  const ownerYear = semesterYearMap[s.id]
-                  const takenByOther = ownerYear && ownerYear !== bulkSemYear
-                  return (
-                    <option key={s.id} value={s.id} disabled={takenByOther}>
-                      {s.name}{takenByOther ? ` (Assigned to Class of ${ownerYear})` : ''}
-                    </option>
-                  )
-                })}
-              </select>
-            </label>
-            {bulkSemError && (
-              <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                <span className="mt-0.5 shrink-0">⚠</span>
-                <span>{bulkSemError}</span>
-              </div>
-            )}
-            <button
-              onClick={applyBulkSemester}
-              disabled={bulkSemLoading}
-              className="mt-4 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800 disabled:opacity-50"
+      {bulkSemYear !== null && (() => {
+        const yearDepts = departments.filter(d => d.intake_year === bulkSemYear)
+        const isPerDept = yearDepts.length > 0
+
+        const SemesterSelect = ({ value, onChange, deptCode }) => {
+          const availableSems = [...semesters]
+            .filter(s => {
+              if (deptCode) return s.department === deptCode
+              return !s.department
+            })
+            .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+          return (
+            <select
+              value={value}
+              onChange={e => onChange(e.target.value)}
+              className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
             >
-              {bulkSemLoading ? 'Saving…' : 'Apply to All Classes'}
-            </button>
+              <option value="">— None —</option>
+              {availableSems.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          )
+        }
+
+        return (
+          <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
+            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+              <div className="mb-5 flex items-center justify-between">
+                <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {bulkSemYear}</h2>
+                <button type="button" onClick={() => { setBulkSemYear(null); setBulkSemError('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
+              </div>
+
+              <div className="space-y-4">
+                {isPerDept && (
+                  // Toggle: Same for all vs Per department
+                  <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-semibold text-brand-950">
+                        {bulkSemSameForAll ? '📚 Same semester for all departments' : '🗂 Different semester per department'}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {bulkSemSameForAll ? 'Use this for Semester 1, 2, 3 — all share the same subjects' : 'Use this for Semester 4+ — each department has its own subjects'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setBulkSemSameForAll(v => !v)}
+                      className={`relative ml-4 h-6 w-11 shrink-0 rounded-full transition ${bulkSemSameForAll ? 'bg-brand-600' : 'bg-slate-300'}`}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${bulkSemSameForAll ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                    </button>
+                  </div>
+                )}
+
+                {isPerDept && !bulkSemSameForAll ? (
+                  <>
+                    {yearDepts.map(dept => (
+                      <label key={dept.shortform} className="block text-sm font-semibold text-brand-950">
+                        <span className="inline-flex items-center gap-2">
+                          <span className="rounded-md bg-indigo-100 px-2 py-0.5 text-xs font-bold text-indigo-700">{dept.shortform}</span>
+                          {dept.name}
+                        </span>
+                        <SemesterSelect
+                          value={bulkSemMap[dept.shortform] || ''}
+                          onChange={v => setBulkSemMap(prev => ({ ...prev, [dept.shortform]: v }))}
+                          deptCode={dept.shortform}
+                        />
+                      </label>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-slate-500">
+                      Select one semester for <b>all {classes.filter(c => c.intake_year === bulkSemYear).length} classes</b> in Class of {bulkSemYear}.
+                    </p>
+                    <label className="block text-sm font-semibold text-brand-950">
+                      Semester
+                      <SemesterSelect
+                        value={bulkSemMap['ALL'] || ''}
+                        onChange={v => setBulkSemMap(prev => ({ ...prev, ALL: v }))}
+                        deptCode={null}
+                      />
+                    </label>
+                  </>
+                )}
+              </div>
+
+              {bulkSemError && (
+                <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                  <span className="mt-0.5 shrink-0">⚠</span>
+                  <span>{bulkSemError}</span>
+                </div>
+              )}
+              <button
+                onClick={applyBulkSemester}
+                disabled={bulkSemLoading}
+                className="mt-5 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800 disabled:opacity-50"
+              >
+                {bulkSemLoading ? 'Saving…' : 'Apply Semesters'}
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
       <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
