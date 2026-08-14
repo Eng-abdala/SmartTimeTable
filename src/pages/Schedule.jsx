@@ -460,7 +460,7 @@ export function Schedule() {
                             if (isBreak) {
                               return (
                                 <td key={cls.id} className="border-r border-black bg-amber-50 px-2 py-2 text-center text-amber-900 font-semibold text-xs">
-                                  ☕ Break
+                                   Break
                                 </td>
                               )
                             }

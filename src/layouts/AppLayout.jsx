@@ -151,9 +151,24 @@ export function AppLayout() {
       console.warn("Could not update subjects.lecturer_id:", e.message)
     }
 
-    // 2. Update taught_subjects on all lecturers in state & DB
+    // 2. Ensure semester_lecturers is synced for any assigned lecturers
     const sub = subjects.find(s => s.id === subjectId)
-    
+    if (sub && sub.semester_id && targetSet.size > 0) {
+      const semesterId = sub.semester_id
+      for (const lecId of targetSet) {
+        const alreadyInSemester = semesterLecturers.some(sl => sl.semester_id === semesterId && sl.lecturer_id === lecId)
+        if (!alreadyInSemester) {
+          setSemesterLecturers(prev => [...prev, { semester_id: semesterId, lecturer_id: lecId }])
+          try {
+            await supabase.from('semester_lecturers').upsert([{ semester_id: semesterId, lecturer_id: lecId }], { onConflict: 'semester_id,lecturer_id' })
+          } catch (err) {
+            console.warn("Could not update semester_lecturers:", err.message)
+          }
+        }
+      }
+    }
+
+    // 3. Update taught_subjects on all lecturers in state & DB
     for (const lecturer of lecturers) {
       const currentTaught = Array.isArray(lecturer.taught_subjects) ? lecturer.taught_subjects : []
       const isTarget = targetSet.has(lecturer.id)

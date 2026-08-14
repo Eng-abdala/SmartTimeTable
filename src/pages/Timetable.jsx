@@ -42,13 +42,9 @@ function isLecturerAvailableOnDay(lecturer, day) {
 }
 
 function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap, attemptSeed) {
-  // Step 1: Assign EXACTLY ONE lecturer per subject for this class
-  // Rule 1: A subject in this class has only 1 teacher for all periods (Theory & Lab).
-  // Rule 2: A teacher can teach AT MOST 1 subject in this class (but can teach across different classes).
   const usedLecturersInClass = new Set()
   const subjectLecturerMap = new Map()
 
-  // Helper: Calculate how many free period slots a lecturer has available in the week for this shift
   const countFreeSlotsForLecturer = (lecturer) => {
     if (!lecturer) return 0
     let freeCount = 0
@@ -57,7 +53,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
         const usedDaily = initialDailyLoad?.[lecturer.id]?.[day] || 0
         const maxDailyAllowed = Math.max(0, 3 - usedDaily)
         let daySlotsAvailable = 0
-        const maxSlotsPerDay = shift === 'Morning' ? 5 : 4
+        const maxSlotsPerDay = 5
         for (let s = 0; s < maxSlotsPerDay; s++) {
           if (!busyMap?.[lecturer.id]?.[day]?.[s]) {
             daySlotsAvailable++
@@ -73,8 +69,6 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     const requiredHours = sub.total_hours || (sub.theory_hours + sub.lab_hours) || 0
     const allQualified = getSubjectLecturers ? getSubjectLecturers(sub.id) : []
     
-    // Filter out lecturers who are ALREADY teaching another subject in this same class
-    // OR who have already reached the maximum limit of 3 classes in total.
     const availableForThisClass = allQualified.filter(l => {
       if (usedLecturersInClass.has(l.id)) return false
       const currentClassCount = classCountMap?.[l.id]?.size || 0
@@ -83,23 +77,17 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     })
     const pool = availableForThisClass.length > 0 ? availableForThisClass : allQualified
 
-    // Sort candidate pool:
-    // 1. Prioritize lecturers who have enough free slots to cover ALL periods (freeSlots >= requiredHours)
-    // 2. Secondary sort by total free slots descending
     const sortedCandidates = [...pool].sort((a, b) => {
       const freeA = countFreeSlotsForLecturer(a)
       const freeB = countFreeSlotsForLecturer(b)
-
       const coversAllA = freeA >= requiredHours ? 1 : 0
       const coversAllB = freeB >= requiredHours ? 1 : 0
-
       if (coversAllA !== coversAllB) return coversAllB - coversAllA
       return freeB - freeA
     })
 
     let chosenLecturer = null
     if (sortedCandidates.length > 0) {
-      // Pick best candidate; rotate among fully capable candidates if attemptSeed > 0
       const fullyCapable = sortedCandidates.filter(l => countFreeSlotsForLecturer(l) >= requiredHours)
       const choicePool = fullyCapable.length > 0 ? fullyCapable : sortedCandidates
       const idx = attemptSeed % choicePool.length
@@ -110,37 +98,36 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     subjectLecturerMap.set(sub.id, chosenLecturer)
   }
 
-  // Step 2: Build blocks using the single assigned lecturer per subject
   const blocks = []
   semesterSubjects.forEach(sub => {
     const lecturer = subjectLecturerMap.get(sub.id)
-    let t = sub.theory_hours
-    while (t > 0) {
-      let size = t >= 2 ? 2 : 1
-      blocks.push({ subject: sub, type: 'Theory', lecturer, size })
-      t -= size
+    const createBlocksForHours = (type, totalHours) => {
+      let h = totalHours
+      while (h > 0) {
+        if (h >= 2) {
+          blocks.push({ subject: sub, type, lecturer, size: 2 })
+          h -= 2
+        } else {
+          blocks.push({ subject: sub, type, lecturer, size: 1 })
+          h -= 1
+        }
+      }
     }
-    let l = sub.lab_hours
-    while (l > 0) {
-      let size = l >= 2 ? 2 : 1
-      blocks.push({ subject: sub, type: 'Lab', lecturer, size })
-      l -= size
-    }
+    createBlocksForHours('Theory', sub.theory_hours || 0)
+    createBlocksForHours('Lab', sub.lab_hours || 0)
   })
 
   const shuffle = (array) => {
     for (let i = array.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [array[i]], [array[j]] = [array[j]], [array[i]]
+      const tmp = array[i]; array[i] = array[j]; array[j] = tmp
     }
   }
 
   const theoryBlocks = blocks.filter(b => b.type === 'Theory')
   const labBlocks = blocks.filter(b => b.type === 'Lab')
-
   shuffle(theoryBlocks)
   shuffle(labBlocks)
-
   const shuffledBlocks = [...theoryBlocks, ...labBlocks]
 
   const localDailyLoad = initialDailyLoad ? JSON.parse(JSON.stringify(initialDailyLoad)) : {}
@@ -148,17 +135,46 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   DAYS.forEach(d => { timetable[d] = [] })
   const daySlotCount = { Saturday: 0, Sunday: 0, Monday: 0, Tuesday: 0, Wednesday: 0 }
 
-  const totalPeriods = shuffledBlocks.reduce((sum, b) => sum + b.size, 0)
-  const baseMax = Math.ceil(totalPeriods / 5)
-
-  const getMaxSlots = (day) => {
-    let m = Math.max(baseMax, 4)
-    if (shift === 'Morning') m = Math.min(m, 5)
-    return m
+  const lecturerSlotMap = {}
+  const markLecturerSlot = (lid, day, slotIndex) => {
+    if (!lecturerSlotMap[lid]) lecturerSlotMap[lid] = {}
+    if (!lecturerSlotMap[lid][day]) lecturerSlotMap[lid][day] = {}
+    lecturerSlotMap[lid][day][slotIndex] = true
+  }
+  const isLecturerSlotTaken = (lid, day, slotIndex) => {
+    return !!(busyMap?.[lid]?.[day]?.[slotIndex] || lecturerSlotMap[lid]?.[day]?.[slotIndex])
   }
 
+  const totalPeriods = shuffledBlocks.reduce((sum, b) => sum + b.size, 0)
+  const maxSlotsPerDay = {}
+  if (totalPeriods >= 20) {
+    // Rule: base is 4 periods per day; for every hour above 20, one more day gets 5 periods.
+    // 20 → 4×5 days
+    // 21 → 5×1 day  + 4×4 days
+    // 22 → 5×2 days + 4×3 days
+    // 23 → 5×3 days + 4×2 days
+    // 24 → 5×4 days + 4×1 day
+    // 25 → 5×5 days
+    const extraDays = Math.min(DAYS.length, totalPeriods - 20)
+    DAYS.forEach((day, idx) => {
+      const rotated = (idx + attemptSeed) % DAYS.length
+      maxSlotsPerDay[day] = rotated < extraDays ? 5 : 4
+    })
+  } else {
+    // For < 20 hrs: distribute evenly across days
+    const base = Math.floor(totalPeriods / DAYS.length)
+    const rem = totalPeriods % DAYS.length
+    DAYS.forEach((day, idx) => {
+      const rotated = (idx + attemptSeed) % DAYS.length
+      maxSlotsPerDay[day] = base + (rotated < rem ? 1 : 0)
+    })
+  }
+
+
+  const getMaxSlots = (day) => maxSlotsPerDay[day]
+
   const theoryDayIdxMap = {}
-  let dayIdx = (attemptSeed + Math.floor(Math.random() * DAYS.length)) % DAYS.length
+  let dayIdx = attemptSeed % DAYS.length
   let emptyLecturerCount = 0
 
   for (const block of shuffledBlocks) {
@@ -167,65 +183,43 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
     do {
       const day = DAYS[dayIdx]
-
       if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
         let assignedLecturer = block.lecturer
         let hasClash = false
-
         if (assignedLecturer) {
           const lid = assignedLecturer.id
-
-          if (!isLecturerAvailableOnDay(assignedLecturer, day)) {
-            hasClash = true
-          }
-
-          if (!hasClash && (localDailyLoad[lid]?.[day] || 0) + block.size > 3) {
-            hasClash = true
-          }
-
-          if (!hasClash && busyMap && busyMap[lid]) {
+          if (!isLecturerAvailableOnDay(assignedLecturer, day)) hasClash = true
+          if (!hasClash && (localDailyLoad[lid]?.[day] || 0) + block.size > 3) hasClash = true
+          if (!hasClash) {
             for (let i = 0; i < block.size; i++) {
-              const slotIndex = daySlotCount[day] + i
-              if (busyMap[lid][day] && busyMap[lid][day][slotIndex]) {
+              if (isLecturerSlotTaken(lid, day, daySlotCount[day] + i)) {
                 hasClash = true
                 break
               }
             }
           }
         }
-
         const chronoDayIdx = DAYS.indexOf(day)
         if (!hasClash && block.type === 'Lab' && theoryDayIdxMap[block.subject.id] !== undefined) {
-          if (chronoDayIdx < theoryDayIdxMap[block.subject.id]) {
-            hasClash = true
-          }
+          if (chronoDayIdx < theoryDayIdxMap[block.subject.id]) hasClash = true
         }
 
         if (!hasClash) {
           for (let i = 0; i < block.size; i++) {
-            timetable[day].push({
-              slotIndex: daySlotCount[day],
-              subject: block.subject,
-              type: block.type,
-              lecturer: assignedLecturer
-            })
+            const slotIndex = daySlotCount[day]
+            timetable[day].push({ slotIndex, subject: block.subject, type: block.type, lecturer: assignedLecturer })
+            if (assignedLecturer) markLecturerSlot(assignedLecturer.id, day, slotIndex)
             daySlotCount[day]++
           }
-
           if (assignedLecturer) {
             const lid = assignedLecturer.id
             if (!localDailyLoad[lid]) localDailyLoad[lid] = {}
             localDailyLoad[lid][day] = (localDailyLoad[lid][day] || 0) + block.size
           }
-
           if (block.type === 'Theory') {
-            if (theoryDayIdxMap[block.subject.id] === undefined) {
-              theoryDayIdxMap[block.subject.id] = chronoDayIdx
-            } else {
-              theoryDayIdxMap[block.subject.id] = Math.min(theoryDayIdxMap[block.subject.id], chronoDayIdx)
-            }
+            if (theoryDayIdxMap[block.subject.id] === undefined) theoryDayIdxMap[block.subject.id] = chronoDayIdx
+            else theoryDayIdxMap[block.subject.id] = Math.min(theoryDayIdxMap[block.subject.id], chronoDayIdx)
           }
-
           placed = true
           dayIdx = (dayIdx + 1) % DAYS.length
           break
@@ -234,96 +228,89 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
       dayIdx = (dayIdx + 1) % DAYS.length
     } while (dayIdx !== startDayIdx)
 
-    // Fallback Phase 1: Try placing block.lecturer into any day/slot where they are free from busyMap clashes
-    if (!placed && block.lecturer) {
-      const lid = block.lecturer.id
-      for (const day of DAYS) {
-        if (isLecturerAvailableOnDay(block.lecturer, day)) {
-          if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
-            let hasBusyClash = false
-            if (busyMap && busyMap[lid]) {
-              for (let i = 0; i < block.size; i++) {
-                const sIdx = daySlotCount[day] + i
-                if (busyMap[lid][day] && busyMap[lid][day][sIdx]) {
-                  hasBusyClash = true
-                  break
-                }
-              }
-            }
-
-            if (!hasBusyClash) {
-              for (let i = 0; i < block.size; i++) {
-                timetable[day].push({
-                  slotIndex: daySlotCount[day],
-                  subject: block.subject,
-                  type: block.type,
-                  lecturer: block.lecturer
-                })
-                daySlotCount[day]++
-              }
-              if (!localDailyLoad[lid]) localDailyLoad[lid] = {}
-              localDailyLoad[lid][day] = (localDailyLoad[lid][day] || 0) + block.size
-              placed = true
-              break
-            }
-          }
-        }
-      }
-    }
-
-    // Fallback Phase 2: If lecturer is physically busy in busyMap at all slots, place block with lecturer = null
     if (!placed) {
-      emptyLecturerCount++
-      for (let i = 0; i < block.size; i++) {
-        let placedSlot = false
-        for (const day of DAYS) {
-          const slotIndex = daySlotCount[day]
-          if (slotIndex < getMaxSlots(day)) {
-            timetable[day].push({
-              slotIndex,
-              subject: block.subject,
-              type: block.type,
-              lecturer: null
-            })
-            daySlotCount[day]++
-            placedSlot = true
-            break
-          }
-        }
+      const assignedLecturer = block.lecturer
+      let remainingSize = block.size
+      let searchDayIdx = dayIdx
+      while (remainingSize > 0) {
+        let piecePlaced = false
+        for (let dOffset = 0; dOffset < DAYS.length; dOffset++) {
+          const tryDayIdx = (searchDayIdx + dOffset) % DAYS.length
+          const day = DAYS[tryDayIdx]
+          if (daySlotCount[day] >= getMaxSlots(day)) continue
 
-        if (!placedSlot) {
-          for (const day of DAYS) {
-            if (daySlotCount[day] < getMaxSlots(day)) {
-              timetable[day].push({
-                slotIndex: daySlotCount[day],
-                subject: block.subject,
-                type: block.type,
-                lecturer: null
-              })
-              daySlotCount[day]++
-              break
+          // Check primary assigned lecturer
+          let usableLecturer = null
+          if (assignedLecturer && isLecturerAvailableOnDay(assignedLecturer, day)) {
+            const lid = assignedLecturer.id
+            const loadOnDay = localDailyLoad[lid]?.[day] || 0
+            if (loadOnDay + 1 <= 3 && !isLecturerSlotTaken(lid, day, daySlotCount[day])) {
+              usableLecturer = assignedLecturer
             }
           }
+
+          // If primary assigned lecturer is busy/clashing, search alternate qualified lecturers for this subject
+          if (!usableLecturer && getSubjectLecturers) {
+            const altQualified = getSubjectLecturers(block.subject.id)
+            const freeAlt = altQualified.find(altL => {
+              if (!isLecturerAvailableOnDay(altL, day)) return false
+              if ((localDailyLoad[altL.id]?.[day] || 0) + 1 > 3) return false
+              if (isLecturerSlotTaken(altL.id, day, daySlotCount[day])) return false
+              return true
+            })
+            if (freeAlt) {
+              usableLecturer = freeAlt
+            }
+          }
+
+          const slotIndex = daySlotCount[day]
+          // Only assign usableLecturer if they are 100% clash-free; otherwise assign null (Unassigned)
+          timetable[day].push({ slotIndex, subject: block.subject, type: block.type, lecturer: usableLecturer || null })
+          if (usableLecturer) {
+            markLecturerSlot(usableLecturer.id, day, slotIndex)
+            if (!localDailyLoad[usableLecturer.id]) localDailyLoad[usableLecturer.id] = {}
+            localDailyLoad[usableLecturer.id][day] = (localDailyLoad[usableLecturer.id][day] || 0) + 1
+          } else {
+            emptyLecturerCount++
+          }
+          daySlotCount[day]++
+          remainingSize--
+          piecePlaced = true
+          searchDayIdx = (tryDayIdx + 1) % DAYS.length
+          break
+        }
+        if (!piecePlaced) {
+          emptyLecturerCount++
+          const targetDay = [...DAYS].sort((a, b) => daySlotCount[a] - daySlotCount[b])[0]
+          const slotIndex = daySlotCount[targetDay]
+          timetable[targetDay].push({ slotIndex, subject: block.subject, type: block.type, lecturer: null })
+          daySlotCount[targetDay]++
+          remainingSize--
         }
       }
+      placed = true
     }
   }
 
-  // Group consecutive blocks by lecturer (Theory before Lab)
+  // Count any accidental clashes just in case
+  let clashCount = 0
+  DAYS.forEach(day => {
+    (timetable[day] || []).forEach(sess => {
+      if (sess.lecturer && busyMap?.[sess.lecturer.id]?.[day]?.[sess.slotIndex]) {
+        clashCount++
+      }
+    })
+  })
+
   for (const day of DAYS) {
     const entries = timetable[day]
     if (!entries || entries.length <= 1) continue
-
     const lecturerOrder = []
     const seen = new Set()
     for (const entry of entries) {
       const lid = entry.lecturer?.id || '__none__'
-      if (!seen.has(lid)) {
-        seen.add(lid)
-        lecturerOrder.push(lid)
-      }
+      if (!seen.has(lid)) { seen.add(lid); lecturerOrder.push(lid) }
     }
-
     timetable[day] = entries.sort((a, b) => {
       const aIdx = lecturerOrder.indexOf(a.lecturer?.id || '__none__')
       const bIdx = lecturerOrder.indexOf(b.lecturer?.id || '__none__')
@@ -332,40 +319,26 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
       if (a.type === 'Lab' && b.type === 'Theory') return 1
       return 0
     })
-
-    // Re-index slotIndex after sorting
-    timetable[day].forEach((item, idx) => {
-      item.slotIndex = idx
-    })
+    timetable[day].forEach((item, idx) => { item.slotIndex = idx })
   }
-
-  return { timetable, emptyLecturerCount }
+  return { timetable, emptyLecturerCount, clashCount }
 }
 
 function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap) {
   let bestGrid = null
-  let minEmpty = Infinity
+  let minScore = Infinity
 
-  // Perform multi-attempt optimization to eliminate conflicts and minimize unassigned slots
   for (let attempt = 0; attempt < 50; attempt++) {
-    const res = generateSinglePassTimetable(
-      semesterSubjects, lecturers, shift, selectedClassId,
-      getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap, attempt
-    )
-
-    if (res.emptyLecturerCount === 0) {
-      return res.timetable
-    }
-
-    if (res.emptyLecturerCount < minEmpty) {
-      minEmpty = res.emptyLecturerCount
+    const res = generateSinglePassTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap, attempt)
+    const score = (res.clashCount * 10000) + res.emptyLecturerCount
+    if (res.clashCount === 0 && res.emptyLecturerCount === 0) return res.timetable
+    if (score < minScore) {
+      minScore = score
       bestGrid = res.timetable
     }
   }
-
   return bestGrid
 }
-
 
 export function Timetable() {
   const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice, loadData } = useOutletContext()
@@ -430,6 +403,64 @@ export function Timetable() {
     }
   }, [urlClassId, selectedSemesterId, classes])
 
+  // Selected class info
+  const selectedClass = useMemo(() =>
+    classes.find(c => c.id === selectedClassId),
+    [classes, selectedClassId]
+  )
+
+  // Selected semester info
+  const selectedSemester = useMemo(() =>
+    semesters.find(s => s.id === selectedSemesterId),
+    [semesters, selectedSemesterId]
+  )
+
+  // Subjects for selected semester
+  const semesterSubjects = useMemo(() =>
+    subjects.filter(s => s.semester_id === selectedSemesterId),
+    [subjects, selectedSemesterId]
+  )
+
+  // Load global busy map for other classes
+  const loadGlobalBusyMap = useCallback(async (currentClassId, currentShift) => {
+    if (!currentClassId) return {}
+    const { data: dbTimetables } = await supabase.from('timetables').select('class_id, semester_id, grid')
+    const busyMap = {}
+    if (dbTimetables) {
+      dbTimetables.forEach(row => {
+        if (row.class_id !== currentClassId) {
+          const savedGrid = row.grid
+          const savedClassId = row.class_id
+          const savedClass = classes.find(c => c.id === savedClassId)
+
+          DAYS.forEach(day => {
+            if (savedGrid && savedGrid[day] && Array.isArray(savedGrid[day])) {
+              savedGrid[day].forEach(session => {
+                if (session.lecturer) {
+                  const lid = session.lecturer.id
+                  const isSameShift = !savedClass || !currentShift || savedClass.shift === currentShift
+                  if (isSameShift) {
+                    if (!busyMap[lid]) busyMap[lid] = {}
+                    if (!busyMap[lid][day]) busyMap[lid][day] = {}
+                    busyMap[lid][day][session.slotIndex] = true
+                  }
+                }
+              })
+            }
+          })
+        }
+      })
+    }
+    setGlobalBusyMap(busyMap)
+    return busyMap
+  }, [classes])
+
+  useEffect(() => {
+    if (selectedClassId && selectedClass) {
+      loadGlobalBusyMap(selectedClassId, selectedClass.shift)
+    }
+  }, [selectedClassId, selectedClass, loadGlobalBusyMap])
+
   // Persist selections to localStorage
   const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v); saveClass('') }
   const saveClass = (v) => { 
@@ -451,24 +482,6 @@ export function Timetable() {
       .filter(s => assignedSemesterIds.has(s.id))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
   }, [semesters, classes])
-
-  // Selected class info
-  const selectedClass = useMemo(() =>
-    classes.find(c => c.id === selectedClassId),
-    [classes, selectedClassId]
-  )
-
-  // Selected semester info
-  const selectedSemester = useMemo(() =>
-    semesters.find(s => s.id === selectedSemesterId),
-    [semesters, selectedSemesterId]
-  )
-
-  // Subjects for selected semester
-  const semesterSubjects = useMemo(() =>
-    subjects.filter(s => s.semester_id === selectedSemesterId),
-    [subjects, selectedSemesterId]
-  )
 
   // Already has a timetable check (from DB)
   const alreadyHasTimetable = useMemo(() => {
@@ -680,6 +693,181 @@ export function Timetable() {
     })
   }
 
+  const [draggedItem, setDraggedItem] = useState(null)
+  const [dragOverItem, setDragOverItem] = useState(null)
+
+  const getTimeStringForSession = (shiftType, count, slotIdx) => {
+    if (shiftType === 'Morning') {
+      const morningEarly = [
+        '07:00 AM - 07:45 AM', '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM',
+        '10:15 AM - 11:15 AM', '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM'
+      ]
+      const morningDefault = [
+        '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM', '10:15 AM - 11:15 AM',
+        '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '02:15 PM - 03:15 PM'
+      ]
+      return count > 4
+        ? (morningEarly[slotIdx] || `Period ${slotIdx + 1}`)
+        : (morningDefault[slotIdx] || `Period ${slotIdx + 1}`)
+    } else {
+      const afternoonSlots = [
+        '01:00 PM - 01:50 PM', '01:50 PM - 02:40 PM', '02:40 PM - 03:30 PM', 
+        '04:00 PM - 05:00 PM', '05:00 PM - 05:50 PM', '05:50 PM - 06:40 PM', '06:40 PM - 07:30 PM'
+      ]
+      return afternoonSlots[slotIdx] || `Period ${slotIdx + 1}`
+    }
+  }
+
+  const validateRowSwap = (dayA, idxA, dayB, idxB) => {
+    if (dayA === dayB && idxA === idxB) return { valid: true }
+
+    const sessA = timetable[dayA][idxA]
+    const sessB = timetable[dayB][idxB]
+
+    const timeStrA = getTimeStringForSession(shift, timetable[dayA].length, sessA.slotIndex)
+    const timeStrB = getTimeStringForSession(shift, timetable[dayB].length, sessB.slotIndex)
+
+    const lecA = sessA.lecturer
+    const lecB = sessB.lecturer
+
+    // Check Lecturer A moving to Day B, Slot B (at timeStrB)
+    if (lecA) {
+      if (!isLecturerAvailableOnDay(lecA, dayB)) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecA.name} is not available on ${dayB}.`
+        }
+      }
+
+      if (globalBusyMap[lecA.id]?.[dayB]?.[sessB.slotIndex]) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecA.name} is not available at ${timeStrB} on ${dayB} (teaching another class at this time).`
+        }
+      }
+
+      const sameClassConflict = timetable[dayB]?.some((s, i) => {
+        if (dayA === dayB && (i === idxA || i === idxB)) return false
+        if (dayA !== dayB && i === idxB) return false
+        return s.slotIndex === sessB.slotIndex && s.lecturer?.id === lecA.id
+      })
+      if (sameClassConflict) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecA.name} is not available at ${timeStrB} on ${dayB} (already scheduled in this class at this time).`
+        }
+      }
+    }
+
+    // Check Lecturer B moving to Day A, Slot A (at timeStrA)
+    if (lecB) {
+      if (!isLecturerAvailableOnDay(lecB, dayA)) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecB.name} is not available on ${dayA}.`
+        }
+      }
+
+      if (globalBusyMap[lecB.id]?.[dayA]?.[sessA.slotIndex]) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecB.name} is not available at ${timeStrA} on ${dayA} (teaching another class at this time).`
+        }
+      }
+
+      const sameClassConflict = timetable[dayA]?.some((s, i) => {
+        if (dayA === dayB && (i === idxA || i === idxB)) return false
+        if (dayA !== dayB && i === idxA) return false
+        return s.slotIndex === sessA.slotIndex && s.lecturer?.id === lecB.id
+      })
+      if (sameClassConflict) {
+        return {
+          valid: false,
+          error: `Lecturer ${lecB.name} is not available at ${timeStrA} on ${dayA} (already scheduled in this class at this time).`
+        }
+      }
+    }
+
+    return { valid: true }
+  }
+
+  const executeRowSwap = (dayA, idxA, dayB, idxB) => {
+    const newTimetable = JSON.parse(JSON.stringify(timetable))
+    const sessA = newTimetable[dayA][idxA]
+    const sessB = newTimetable[dayB][idxB]
+
+    const timeStrA = getTimeStringForSession(shift, timetable[dayA].length, sessA.slotIndex)
+    const timeStrB = getTimeStringForSession(shift, timetable[dayB].length, sessB.slotIndex)
+
+    const tempSubject = sessA.subject
+    const tempType = sessA.type
+    const tempLecturer = sessA.lecturer
+
+    sessA.subject = sessB.subject
+    sessA.type = sessB.type
+    sessA.lecturer = sessB.lecturer
+
+    sessB.subject = tempSubject
+    sessB.type = tempType
+    sessB.lecturer = tempLecturer
+
+    setTimetable(newTimetable)
+    setIsSaved(false)
+
+    setNotice(`Swapped sessions between ${timeStrA} (${dayA}) and ${timeStrB} (${dayB})! Click 'Save Timetable' to keep changes.`, 'success')
+  }
+
+  const handleDragStart = (e, day, idx) => {
+    setDraggedItem({ day, idx })
+    e.dataTransfer.setData('text/plain', JSON.stringify({ day, idx }))
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragOver = (e, day, idx) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (!dragOverItem || dragOverItem.day !== day || dragOverItem.idx !== idx) {
+      setDragOverItem({ day, idx })
+    }
+  }
+
+  const handleDragLeave = (e) => {
+    e.preventDefault()
+  }
+
+  const handleDrop = (e, dayB, idxB) => {
+    e.preventDefault()
+    let source = draggedItem
+    if (!source) {
+      try {
+        const raw = e.dataTransfer.getData('text/plain')
+        if (raw) source = JSON.parse(raw)
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    if (source) {
+      const { day: dayA, idx: idxA } = source
+      if (dayA !== undefined && idxA !== undefined) {
+        const validation = validateRowSwap(dayA, idxA, dayB, idxB)
+        if (!validation.valid) {
+          setNotice(validation.error, 'error')
+        } else {
+          executeRowSwap(dayA, idxA, dayB, idxB)
+        }
+      }
+    }
+
+    setDraggedItem(null)
+    setDragOverItem(null)
+  }
+
+  const handleDragEnd = () => {
+    setDraggedItem(null)
+    setDragOverItem(null)
+  }
+
   const handleLecturerChange = (day, sessionIdx, newLecturerId) => {
     const newTimetable = { ...timetable }
     const session = newTimetable[day][sessionIdx]
@@ -690,6 +878,7 @@ export function Timetable() {
       session.lecturer = null
     }
     setTimetable(newTimetable)
+    setIsSaved(false)
   }
 
   const shift = selectedClass?.shift || 'Morning'
@@ -709,6 +898,7 @@ export function Timetable() {
           body > * { display: none; }
           #print-timetable { display: block !important; }
           #print-timetable { position: fixed; top: 0; left: 0; width: 100%; }
+          .no-print { display: none !important; }
         }
       `}</style>
 
@@ -752,7 +942,7 @@ export function Timetable() {
             >
               <span className="text-base">{isSaved ? '✓' : '💾'}</span> {isSaved ? 'Saved to Class' : 'Save Timetable'}
             </button>
-            
+
             {isSaved && (
               <button 
                 onClick={handleGenerateAnother} 
@@ -872,7 +1062,16 @@ export function Timetable() {
           </div>
         </div>
       ) : (
-        <div className="flex justify-center bg-white border border-slate-200 rounded-xl p-8">
+        <div className="flex flex-col items-center bg-white border border-slate-200 rounded-xl p-8">
+          {/* Drag & Drop Tip Banner */}
+          <div className="no-print mb-6 w-full max-w-4xl rounded-xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-xs font-medium text-indigo-900 flex items-center gap-3 shadow-sm">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white font-bold text-sm">⋮⋮</span>
+            <div>
+              <p className="font-bold text-indigo-950 text-sm">Interactive Drag & Drop Row Replacement</p>
+              <p className="text-indigo-700">Drag any session row and drop it onto another to replace/swap time slots. The system automatically validates lecturer availability for both time slots.</p>
+            </div>
+          </div>
+
           <div ref={printRef} id="print-timetable" className="w-full max-w-4xl bg-white" style={{fontFamily: "'Times New Roman', Times, serif"}}>
             
             {/* Title exact match */}
@@ -906,59 +1105,47 @@ export function Timetable() {
                       
                       {/* Sessions for the Day */}
                       {daySessions.map((session, idx) => {
-                        let timeString = ''
-                        if (shift === 'Morning') {
-                          // morningEarly: 7:00 AM start — used when a day has more than 4 sessions (overflow)
-                          // morningDefault: 7:45 AM start — used for standard ≤4-session days
-                          // Morning capacity = 20 periods/week (4 per day × 5 days)
-                          // Each extra period beyond 20 requires one day to start at 7:00 AM
-                          const morningEarly = [
-                            '07:00 AM - 07:45 AM', '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM',
-                            '10:15 AM - 11:15 AM', '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM'
-                          ]
-                          const morningDefault = [
-                            '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM', '10:15 AM - 11:15 AM',
-                            '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM', '02:15 PM - 03:15 PM'
-                          ]
-                          
-                          // Any day with more than 4 sessions needs the early 7:00 AM slot
-                          if (daySessions.length > 4) {
-                            timeString = morningEarly[session.slotIndex] || 'Extra Slot'
-                          } else {
-                            timeString = morningDefault[session.slotIndex] || 'Extra Slot'
-                          }
-                        } else {
-                          // Afternoon overflow times
-                          const afternoonSlots = [
-                            '01:00 PM - 01:50 PM', '01:50 PM - 02:40 PM', '02:40 PM - 03:30 PM', 
-                            '04:00 PM - 05:00 PM', '05:00 PM - 05:50 PM', '05:50 PM - 06:40 PM', '06:40 PM - 07:30 PM'
-                          ]
-                          timeString = afternoonSlots[session.slotIndex] || 'Extra Slot'
-                        }
+                        const timeString = getTimeStringForSession(shift, daySessions.length, session.slotIndex)
+                        const isDragging = draggedItem?.day === day && draggedItem?.idx === idx
+                        const isDragOver = dragOverItem?.day === day && dragOverItem?.idx === idx
 
                         return (
-                          <tr key={`${day}-${idx}`} className="border border-black bg-white text-black">
+                          <tr 
+                            key={`${day}-${idx}`}
+                            draggable={true}
+                            onDragStart={(e) => handleDragStart(e, day, idx)}
+                            onDragOver={(e) => handleDragOver(e, day, idx)}
+                            onDragLeave={handleDragLeave}
+                            onDrop={(e) => handleDrop(e, day, idx)}
+                            onDragEnd={handleDragEnd}
+                            className={`border border-black transition-all cursor-grab active:cursor-grabbing ${
+                              isDragging 
+                                ? 'opacity-40 bg-indigo-50 border-2 border-dashed border-indigo-400' 
+                                : isDragOver
+                                ? 'bg-blue-100 border-2 border-blue-600 font-bold shadow-inner'
+                                : 'bg-white text-black hover:bg-slate-50'
+                            }`}
+                          >
                             <td className="border border-black px-3 py-1.5 align-middle">
-                              {session.subject.name}
+                              <div className="flex items-center gap-2">
+                                <span className="no-print select-none text-slate-400 hover:text-slate-700 cursor-grab text-xs font-mono font-bold" title="Drag to swap row">⋮⋮</span>
+                                <span>{session.subject.name}</span>
+                              </div>
                             </td>
                             <td className="border border-black px-3 py-1.5 text-center align-middle whitespace-nowrap">
                               {timeString}
                             </td>
                             <td className="border border-black px-3 py-1.5 align-middle">
-                              {!isSaved && generated ? (
-                                <select 
-                                  value={session.lecturer ? session.lecturer.id : ''}
-                                  onChange={(e) => handleLecturerChange(day, idx, e.target.value)}
-                                  className="w-full bg-transparent outline-none border-b border-dashed border-slate-300 focus:border-brand-500 py-1"
-                                >
-                                  <option value="">-- No Lecturer --</option>
-                                  {getAvailableLecturersForSession(session.subject, day, session.slotIndex, session.lecturer?.id).map(l => (
-                                    <option key={l.id} value={l.id}>{l.name}</option>
-                                  ))}
-                                </select>
-                              ) : (
-                                session.lecturer ? session.lecturer.name : <span className="italic text-slate-400">No Lecture</span>
-                              )}
+                              <select 
+                                value={session.lecturer ? session.lecturer.id : ''}
+                                onChange={(e) => handleLecturerChange(day, idx, e.target.value)}
+                                className="w-full bg-transparent outline-none border-b border-dashed border-slate-300 focus:border-brand-500 py-1"
+                              >
+                                <option value="">-- No Lecturer --</option>
+                                {getAvailableLecturersForSession(session.subject, day, session.slotIndex, session.lecturer?.id).map(l => (
+                                  <option key={l.id} value={l.id}>{l.name}</option>
+                                ))}
+                              </select>
                             </td>
                             <td className="border border-black px-3 py-1.5 text-center align-middle">
                               {session.type}
@@ -983,4 +1170,3 @@ export function Timetable() {
     </>
   )
 }
-

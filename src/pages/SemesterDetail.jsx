@@ -312,13 +312,15 @@ export function SemesterDetail() {
   }, [semesterLecturers, id, semesterSubjects, getSubjectLecturers])
 
   const addLecturerToSemester = async (lecturerId) => {
-    if (!lecturerId || staffIds.includes(lecturerId)) return
-    
+    if (!lecturerId) return
+    const isAlreadyInSemesterLecturers = semesterLecturers.some(sl => sl.semester_id === id && sl.lecturer_id === lecturerId)
+    if (isAlreadyInSemesterLecturers) return
+
     // Optimistic local update
-    setSemesterLecturers([...semesterLecturers, { semester_id: id, lecturer_id: lecturerId }])
-    
+    setSemesterLecturers(prev => [...prev, { semester_id: id, lecturer_id: lecturerId }])
+
     // Sync to DB
-    const { error } = await supabase.from('semester_lecturers').insert([{ semester_id: id, lecturer_id: lecturerId }])
+    const { error } = await supabase.from('semester_lecturers').upsert([{ semester_id: id, lecturer_id: lecturerId }], { onConflict: 'semester_id,lecturer_id' })
     if (error) setNotice(`Failed to add lecturer: ${error.message}`, 'error')
   }
 
