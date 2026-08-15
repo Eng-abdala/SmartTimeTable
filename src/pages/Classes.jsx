@@ -34,11 +34,8 @@ export function Classes() {
   const [deptForm, setDeptForm] = useState({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
   const [deptError, setDeptError] = useState('')
 
-  // ── Bulk Semester Assignment ───────────────────────────────────────────────
-  const [bulkSemYear, setBulkSemYear] = useState(null)  // which year's modal is open
-  const [bulkSemMap, setBulkSemMap] = useState({})      // { deptCode|'ALL' -> semester_id }
-  const [bulkSemSameForAll, setBulkSemSameForAll] = useState(false) // toggle: one sem for all
-  const [bulkSemLoading, setBulkSemLoading] = useState(false)
+
+
 
   // ── Academic Year CRUD ─────────────────────────────────────────────────────
   const addAcademicYear = async () => {
@@ -83,77 +80,68 @@ export function Classes() {
 
   const [bulkSemError, setBulkSemError] = useState('')
 
-  // Detect if the year has dept-separated semesters (any class semester_id comes from a dept semester)
-  const yearHasDeptSemesters = (year) => {
-    const yearCls = classes.filter(c => c.intake_year === year)
-    return yearCls.some(c => {
-      const sem = semesters.find(s => s.id === c.semester_id)
-      return sem && sem.department
-    })
+  // ── Semester Picker Modal ──────────────────────────────────────────────────
+  const [semPickerYear, setSemPickerYear] = useState(null)   // which year card was clicked
+  const [semPickerChoice, setSemPickerChoice] = useState('') // selected semester id (general) or sem-level label (dept)
+
+  // Open picker modal
+  const openSemPicker = (year) => {
+    setSemPickerYear(year)
+    setSemPickerChoice('')
   }
 
-  const openBulkSemModal = (year) => {
+  // Execute assignment after user picks a semester
+  const doAssignSemester = async () => {
+    const year = semPickerYear
+    if (!year || !semPickerChoice) return
+
     const yearCls = classes.filter(c => c.intake_year === year)
     const yearDepts = departments.filter(d => d.intake_year === year)
-    const map = {}
-    // Detect if currently using a shared general semester
-    const firstSemId = yearCls.find(c => c.semester_id)?.semester_id || ''
-    const firstSem = semesters.find(s => s.id === firstSemId)
-    const currentlyShared = !firstSem?.department
-    setBulkSemSameForAll(currentlyShared || yearDepts.length === 0)
-    if (yearDepts.length > 0) {
-      yearDepts.forEach(dept => {
-        const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
-        const existingId = deptCls.find(c => c.semester_id)?.semester_id || ''
-        const sem = semesters.find(s => s.id === existingId)
-        if (sem && sem.department === dept.shortform) {
-          map[dept.shortform] = existingId
-        } else {
-          map[dept.shortform] = ''
-        }
-      })
-    }
-    map['ALL'] = firstSemId
-    setBulkSemMap(map)
-    setBulkSemError('')
-    setBulkSemYear(year)
-  }
 
-  const applyBulkSemester = async () => {
-    if (!bulkSemYear) return
-    setBulkSemError('')
-    setBulkSemLoading(true)
+    const chosenSem = semesters.find(s => s.id === semPickerChoice)
+    if (!chosenSem) return
 
-    const yearDepts = departments.filter(d => d.intake_year === bulkSemYear)
-    const yearCls = classes.filter(c => c.intake_year === bulkSemYear)
+    if (chosenSem.department && yearDepts.length > 0) {
+      // Dept mode: semPickerChoice is a representative dept semester
+      const updates = []
+      const levelName = chosenSem.name.replace(/\s*\(.*?\)\s*$/, '').trim()
 
-    if (yearDepts.length > 0 && !bulkSemSameForAll) {
-      // Per-department mode
       for (const dept of yearDepts) {
-        const semId = bulkSemMap[dept.shortform] || null
+        const deptSem = semesters.find(s =>
+          s.department === dept.shortform &&
+          s.name.replace(/\s*\(.*?\)\s*$/, '').trim() === levelName
+        )
+        if (!deptSem) continue
         const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
         if (deptCls.length === 0) continue
-        const { error } = await supabase
-          .from('classes')
-          .update({ semester_id: semId })
-          .in('id', deptCls.map(c => c.id))
-        if (error) { setNotice(error.message, 'error'); setBulkSemLoading(false); return }
+        updates.push({ semId: deptSem.id, classIds: deptCls.map(c => c.id) })
       }
+
+      if (updates.length === 0) {
+        setNotice('No matching department semesters found for this level. Please create them first.', 'error')
+        return
+      }
+
+      for (const { semId, classIds } of updates) {
+        const { error } = await supabase.from('classes').update({ semester_id: semId }).in('id', classIds)
+        if (error) { setNotice(error.message, 'error'); return }
+      }
+      setNotice(`✅ Semesters auto-assigned for all departments in Class of ${year}!`)
     } else {
-      // Same semester for ALL classes in the year
-      const semId = bulkSemMap['ALL'] || null
+      // General mode: assign the specific selected semester to all classes in the year
       const { error } = await supabase
         .from('classes')
-        .update({ semester_id: semId })
+        .update({ semester_id: semPickerChoice })
         .in('id', yearCls.map(c => c.id))
-      if (error) { setNotice(error.message, 'error'); setBulkSemLoading(false); return }
+      if (error) { setNotice(error.message, 'error'); return }
+      setNotice(`✅ Semester "${chosenSem.name}" assigned to all classes in Class of ${year}!`)
     }
 
-    setNotice(`Semesters updated for Class of ${bulkSemYear}.`)
     await loadData()
-    setBulkSemLoading(false)
-    setBulkSemYear(null)
+    setSemPickerYear(null)
+    setSemPickerChoice('')
   }
+
 
   // ── Department CRUD ────────────────────────────────────────────────────────
   const addDepartment = async () => {
@@ -456,112 +444,97 @@ export function Classes() {
   // ═══════════════════════════════════════════════════════════════════════════
   return (
     <>
-      {/* ── Bulk Semester Assignment Modal ── */}
-      {bulkSemYear !== null && (() => {
-        const yearDepts = departments.filter(d => d.intake_year === bulkSemYear)
-        const isPerDept = yearDepts.length > 0
+      {/* ── Semester Picker Modal ── */}
+      {semPickerYear !== null && (() => {
+        const yearDepts = departments.filter(d => d.intake_year === semPickerYear)
 
-        const SemesterSelect = ({ value, onChange, deptCode }) => {
-          const availableSems = [...semesters]
-            .filter(s => {
-              if (deptCode) return s.department === deptCode
-              return !s.department
+        // General semesters (Semester 1, 2, 3 — no department)
+        const generalOptions = semesters
+          .filter(s => !s.department)
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+          .map(s => ({ id: s.id, label: s.name, isDept: false }))
+
+        // Department semester levels — group by level name, show once
+        // e.g. "Semester 4 (CA)", "Semester 4 (CM)", "Semester 4 (CN)" → show "Semester 4" once
+        const deptLevelMap = {}
+        if (yearDepts.length > 0) {
+          semesters
+            .filter(s => s.department && yearDepts.some(d => d.shortform === s.department))
+            .forEach(s => {
+              const levelName = s.name.replace(/\s*\(.*?\)\s*$/, '').trim()
+              if (!deptLevelMap[levelName]) deptLevelMap[levelName] = s.id // representative id
             })
-            .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-          return (
-            <select
-              value={value}
-              onChange={e => onChange(e.target.value)}
-              className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-            >
-              <option value="">— None —</option>
-              {availableSems.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          )
         }
+        const deptOptions = Object.entries(deptLevelMap)
+          .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+          .map(([label, id]) => ({ id, label, isDept: true }))
+
+        // Combine: general first, then dept levels
+        const allOptions = [...generalOptions, ...deptOptions]
 
         return (
           <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
-            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {bulkSemYear}</h2>
-                <button type="button" onClick={() => { setBulkSemYear(null); setBulkSemError('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
+                <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {semPickerYear}</h2>
+                <button type="button" onClick={() => { setSemPickerYear(null); setSemPickerChoice('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
               </div>
 
-              <div className="space-y-4">
-                {isPerDept && (
-                  // Toggle: Same for all vs Per department
-                  <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <div>
-                      <p className="text-sm font-semibold text-brand-950">
-                        {bulkSemSameForAll ? '📚 Same semester for all departments' : '🗂 Different semester per department'}
-                      </p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        {bulkSemSameForAll ? 'Use this for Semester 1, 2, 3 — all share the same subjects' : 'Use this for Semester 4+ — each department has its own subjects'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setBulkSemSameForAll(v => !v)}
-                      className={`relative ml-4 h-6 w-11 shrink-0 rounded-full transition ${bulkSemSameForAll ? 'bg-brand-600' : 'bg-slate-300'}`}
-                    >
-                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${bulkSemSameForAll ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                    </button>
-                  </div>
-                )}
+              <p className="mb-4 text-sm text-slate-500">
+                Select a semester to assign to all classes in Class of {semPickerYear}.
+              </p>
 
-                {isPerDept && !bulkSemSameForAll ? (
-                  <>
-                    {yearDepts.map(dept => (
-                      <label key={dept.shortform} className="block text-sm font-semibold text-brand-950">
-                        <span className="inline-flex items-center gap-2">
-                          <span className="rounded-md bg-indigo-100 px-2 py-0.5 text-xs font-bold text-indigo-700">{dept.shortform}</span>
-                          {dept.name}
+              {allOptions.length === 0 ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  No semesters found. Go to the <b>Semesters</b> page and create one first.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {allOptions.map(opt => {
+                    const isSelected = semPickerChoice === opt.id
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setSemPickerChoice(opt.id)}
+                        className={`w-full rounded-xl border px-4 py-3 text-left transition ${
+                          isSelected
+                            ? 'border-brand-500 bg-brand-50'
+                            : 'border-slate-200 bg-white hover:border-brand-300 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className={`text-sm font-bold ${isSelected ? 'text-brand-800' : 'text-slate-800'}`}>
+                          {opt.label}
                         </span>
-                        <SemesterSelect
-                          value={bulkSemMap[dept.shortform] || ''}
-                          onChange={v => setBulkSemMap(prev => ({ ...prev, [dept.shortform]: v }))}
-                          deptCode={dept.shortform}
-                        />
-                      </label>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                    <p className="text-sm text-slate-500">
-                      Select one semester for <b>all {classes.filter(c => c.intake_year === bulkSemYear).length} classes</b> in Class of {bulkSemYear}.
-                    </p>
-                    <label className="block text-sm font-semibold text-brand-950">
-                      Semester
-                      <SemesterSelect
-                        value={bulkSemMap['ALL'] || ''}
-                        onChange={v => setBulkSemMap(prev => ({ ...prev, ALL: v }))}
-                        deptCode={null}
-                      />
-                    </label>
-                  </>
-                )}
-              </div>
-
-              {bulkSemError && (
-                <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                  <span className="mt-0.5 shrink-0">⚠</span>
-                  <span>{bulkSemError}</span>
+                        {opt.isDept && (
+                          <span className="ml-2 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-600">
+                            per department
+                          </span>
+                        )}
+                        {!opt.isDept && yearDepts.length > 0 && (
+                          <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                            all classes
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
+
               <button
-                onClick={applyBulkSemester}
-                disabled={bulkSemLoading}
-                className="mt-5 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800 disabled:opacity-50"
+                onClick={doAssignSemester}
+                disabled={!semPickerChoice}
+                className="mt-5 w-full rounded-xl bg-brand-600 py-2 px-10 font-bold text-white transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {bulkSemLoading ? 'Saving…' : 'Apply Semesters'}
+                ⚡ Assign Semester
               </button>
             </div>
           </div>
         )
       })()}
+
+
       <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
@@ -616,11 +589,11 @@ export function Classes() {
       {!academicYears.length ? (
         <Empty title="No academic years yet" text='Click "Add Academic Year" to get started.' />
       ) : (
-        <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <section className="grid gap-40  md:grid-cols-2 xl:grid-cols-4">
           {academicYears.map((year) => (
             <div
               key={year}
-              className="group rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
+              className="group rounded-2xl w-65  border border-slate-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
             >
               <div className="flex items-start justify-between">
                 <span className="rounded-lg bg-cyan-50 px-3 py-1 text-xs font-bold text-brand-600">{year}</span>
@@ -641,27 +614,37 @@ export function Classes() {
                   <span className="text-brand-500 transition group-hover:translate-x-1"><Icon name="arrow" /></span>
                 </div>
               </button>
-              {/* Semester badge and bulk-assign button */}
-              <div className="mt-3 flex items-center justify-between border-t border-slate-50 pt-3">
+              {/* Semester badge and auto-assign button */}
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-50 pt-3">
                 {(() => {
                   const yearCls = classes.filter(c => c.intake_year === year)
-                  const assignedSemId = yearCls.find(c => c.semester_id)?.semester_id
-                  const assignedSem = semesters.find(s => s.id === assignedSemId)
-                  const allSame = yearCls.length > 0 && yearCls.every(c => c.semester_id === assignedSemId)
-                  return assignedSem ? (
-                    <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700">
-                      {assignedSem.name}{!allSame ? ' (mixed)' : ''}
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400">No semester</span>
-                  )
+                  const yearDepts = departments.filter(d => d.intake_year === year)
+                  // Check if all dept classes have their matching semester assigned
+                  const allAssigned = yearDepts.length > 0 && yearDepts.every(dept => {
+                    const matchingSem = semesters.find(s => s.department === dept.shortform)
+                    if (!matchingSem) return false
+                    const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
+                    return deptCls.length > 0 && deptCls.every(c => c.semester_id === matchingSem.id)
+                  })
+                  const firstAssigned = yearCls.find(c => c.semester_id)
+                  const firstSem = semesters.find(s => s.id === firstAssigned?.semester_id)
+                  if (yearDepts.length > 0 && allAssigned) {
+                    return <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 whitespace-nowrap">✓ All depts assigned</span>
+                  }
+                  if (yearDepts.length > 0 && firstSem) {
+                    const levelName = firstSem.name.replace(/\s*\(.*?\)\s*$/, '').trim()
+                    return <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 whitespace-nowrap">{levelName} (mixed)</span>
+                  }
+                  return firstSem
+                    ? <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 whitespace-nowrap">{firstSem.name}</span>
+                    : <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400 whitespace-nowrap">No semester</span>
                 })()}
                 <button
-                  onClick={e => { e.stopPropagation(); openBulkSemModal(year) }}
-                  className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 border border-brand-200 hover:bg-cyan-50 transition"
-                  title="Assign semester to all classes in this year"
+                  onClick={e => { e.stopPropagation(); openSemPicker(year) }}
+                  className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 border border-brand-200 hover:bg-cyan-50 transition"
+                  title="Auto-assign correct semester to each class"
                 >
-                  Set Semester
+                  ⚡ Set Semester
                 </button>
               </div>
             </div>
