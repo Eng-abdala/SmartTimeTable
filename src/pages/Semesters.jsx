@@ -21,26 +21,44 @@ function sortByNumber(list) {
   })
 }
 
-function SemesterCard({ semester, subjects, navigate }) {
+function SemesterCard({ semester, subjects, navigate, setModal, remove }) {
   const items = subjects.filter(s => s.semester_id === semester.id)
   const hours = items.reduce((sum, s) => sum + s.total_hours, 0)
   return (
-    <button
+    <div
       onClick={() => navigate(`/semesters/${semester.id}`)}
-      className="group rounded-2xl border border-slate-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
+      className="group relative cursor-pointer rounded-2xl border border-slate-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
     >
-      <span className="text-brand-500 transition group-hover:translate-x-1 block"><Icon name="arrow" /></span>
-      <h3 className="mt-3 text-lg font-bold text-brand-950">{semester.name}</h3>
+      <div className="flex items-start justify-between">
+        <span className="text-brand-500 transition group-hover:translate-x-1 block"><Icon name="arrow" /></span>
+        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+          <button
+            onClick={(e) => { e.stopPropagation(); setModal({ type: 'semester', data: semester }) }}
+            className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-brand-600"
+            title="Edit Semester"
+          >
+            <Icon name="edit" className="h-4 w-4" />
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); remove('semesters', semester.id) }}
+            className="rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
+            title="Delete Semester"
+          >
+            <Icon name="trash" className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+      <h3 className="mt-2 text-lg font-bold text-brand-950">{semester.name}</h3>
       <div className="mt-4 flex border-t border-slate-100 pt-3 text-sm">
         <span className="flex-1 text-slate-500"><b className="text-brand-950">{items.length}</b> subjects</span>
         <span className="text-slate-500"><b className="text-brand-950">{hours}</b> hrs</span>
       </div>
-    </button>
+    </div>
   )
 }
 
 export function Semesters() {
-  const { semesters, subjects, setModal } = useOutletContext()
+  const { semesters, subjects, setModal, remove } = useOutletContext()
   const navigate = useNavigate()
 
   // Split into general (1–3) and departmental (4+)
@@ -89,7 +107,7 @@ export function Semesters() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {generalSemesters.map(s => (
-              <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} />
+              <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} setModal={setModal} remove={remove} />
             ))}
           </div>
         )}
@@ -127,7 +145,7 @@ export function Semesters() {
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   {list.map(s => (
-                    <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} />
+                    <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} setModal={setModal} remove={remove} />
                   ))}
                 </div>
               )}

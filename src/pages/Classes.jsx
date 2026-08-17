@@ -104,16 +104,34 @@ export function Classes() {
     if (chosenSem.department && yearDepts.length > 0) {
       // Dept mode: semPickerChoice is a representative dept semester
       const updates = []
-      const levelName = chosenSem.name.replace(/\s*\(.*?\)\s*$/, '').trim()
+      const missingDepts = []
+      
+      const levelMatch = chosenSem.name.match(/Semester\s*(\d+)/i)
+      const levelNum = levelMatch ? levelMatch[1] : null
 
       for (const dept of yearDepts) {
-        const deptSem = semesters.find(s =>
-          s.department === dept.shortform &&
-          s.name.replace(/\s*\(.*?\)\s*$/, '').trim() === levelName
-        )
-        if (!deptSem) continue
         const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
-        if (deptCls.length === 0) continue
+        if (deptCls.length === 0) continue // Skip if this department has no classes in this year
+
+        let deptSem = null
+        if (levelNum) {
+          deptSem = semesters.find(s =>
+            s.department === dept.shortform &&
+            new RegExp(`Semester\\s*${levelNum}\\b`, 'i').test(s.name)
+          )
+        } else {
+          // Fallback if it doesn't contain "Semester X", just try removing parenthesis suffix
+          const levelName = chosenSem.name.replace(/\s*\(.*?\)\s*$/, '').trim()
+          deptSem = semesters.find(s =>
+            s.department === dept.shortform &&
+            s.name.replace(/\s*\(.*?\)\s*$/, '').trim() === levelName
+          )
+        }
+
+        if (!deptSem) {
+          missingDepts.push(dept.shortform)
+          continue
+        }
         updates.push({ semId: deptSem.id, classIds: deptCls.map(c => c.id) })
       }
 
@@ -122,13 +140,31 @@ export function Classes() {
         return
       }
 
+      const semIds = updates.map(u => u.semId)
+      const conflictClass = classes.find(c => c.intake_year !== year && semIds.includes(c.semester_id))
+      if (conflictClass) {
+        setNotice(`Cannot assign: this semester level is already used by Class of ${conflictClass.intake_year}.`, 'error')
+        return
+      }
+
       for (const { semId, classIds } of updates) {
         const { error } = await supabase.from('classes').update({ semester_id: semId }).in('id', classIds)
         if (error) { setNotice(error.message, 'error'); return }
       }
-      setNotice(`✅ Semesters auto-assigned for all departments in Class of ${year}!`)
+      
+      if (missingDepts.length > 0) {
+        setNotice(`⚠ Assigned to some depts, but missing semesters for: ${missingDepts.join(', ')}. Create them first!`, 'error')
+      } else {
+        setNotice(`✅ Semesters auto-assigned for all departments in Class of ${year}!`)
+      }
     } else {
       // General mode: assign the specific selected semester to all classes in the year
+      const conflictClass = classes.find(c => c.intake_year !== year && c.semester_id === semPickerChoice)
+      if (conflictClass) {
+        setNotice(`Cannot assign: this semester is already used by Class of ${conflictClass.intake_year}.`, 'error')
+        return
+      }
+
       const { error } = await supabase
         .from('classes')
         .update({ semester_id: semPickerChoice })
@@ -618,26 +654,27 @@ export function Classes() {
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-50 pt-3">
                 {(() => {
                   const yearCls = classes.filter(c => c.intake_year === year)
-                  const yearDepts = departments.filter(d => d.intake_year === year)
-                  // Check if all dept classes have their matching semester assigned
-                  const allAssigned = yearDepts.length > 0 && yearDepts.every(dept => {
-                    const matchingSem = semesters.find(s => s.department === dept.shortform)
-                    if (!matchingSem) return false
-                    const deptCls = yearCls.filter(c => c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
-                    return deptCls.length > 0 && deptCls.every(c => c.semester_id === matchingSem.id)
-                  })
-                  const firstAssigned = yearCls.find(c => c.semester_id)
-                  const firstSem = semesters.find(s => s.id === firstAssigned?.semester_id)
-                  if (yearDepts.length > 0 && allAssigned) {
-                    return <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 whitespace-nowrap">✓ All depts assigned</span>
+                  if (yearCls.length === 0) {
+                    return <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400 whitespace-nowrap">No classes</span>
                   }
-                  if (yearDepts.length > 0 && firstSem) {
-                    const levelName = firstSem.name.replace(/\s*\(.*?\)\s*$/, '').trim()
-                    return <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 whitespace-nowrap">{levelName} (mixed)</span>
+                  
+                  const assignedClasses = yearCls.filter(c => c.semester_id)
+                  if (assignedClasses.length === 0) {
+                    return <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400 whitespace-nowrap">No semester</span>
                   }
-                  return firstSem
-                    ? <span className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-semibold text-brand-700 whitespace-nowrap">{firstSem.name}</span>
-                    : <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-400 whitespace-nowrap">No semester</span>
+                  
+                  // Extract the level of the first assigned semester to show
+                  const firstSem = semesters.find(s => s.id === assignedClasses[0].semester_id)
+                  const levelMatch = firstSem?.name.match(/Semester\s*(\d+)/i)
+                  const levelName = levelMatch ? `Semester ${levelMatch[1]}` : firstSem?.name.replace(/\s*\(.*?\)\s*$/, '').trim() || 'Semester'
+                  
+                  const isAllAssigned = assignedClasses.length === yearCls.length
+                  
+                  if (isAllAssigned) {
+                    return <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 whitespace-nowrap">✓ {levelName}</span>
+                  } else {
+                    return <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 whitespace-nowrap">⚠ {levelName} (partial)</span>
+                  }
                 })()}
                 <button
                   onClick={e => { e.stopPropagation(); openSemPicker(year) }}
