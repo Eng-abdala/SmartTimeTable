@@ -53,7 +53,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
         const usedDaily = initialDailyLoad?.[lecturer.id]?.[day] || 0
         const maxDailyAllowed = Math.max(0, 3 - usedDaily)
         let daySlotsAvailable = 0
-        const maxSlotsPerDay = 5
+        const maxSlotsPerDay = 6
         for (let s = 0; s < maxSlotsPerDay; s++) {
           if (!busyMap?.[lecturer.id]?.[day]?.[s]) {
             daySlotsAvailable++
@@ -144,6 +144,22 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   const isLecturerSlotTaken = (lid, day, slotIndex) => {
     return !!(busyMap?.[lid]?.[day]?.[slotIndex] || lecturerSlotMap[lid]?.[day]?.[slotIndex])
   }
+  const findLecturerForBlock = (subject, day, startSlot, size, preferredLecturer) => {
+    const qualified = getSubjectLecturers ? getSubjectLecturers(subject.id) : []
+    const candidates = Array.from(new Map([
+      ...(preferredLecturer ? [[preferredLecturer.id, preferredLecturer]] : []),
+      ...qualified.map(lecturer => [lecturer.id, lecturer]),
+    ]).values())
+
+    return candidates.find(lecturer => {
+      if (!isLecturerAvailableOnDay(lecturer, day)) return false
+      if ((localDailyLoad[lecturer.id]?.[day] || 0) + size > 3) return false
+      for (let offset = 0; offset < size; offset++) {
+        if (isLecturerSlotTaken(lecturer.id, day, startSlot + offset)) return false
+      }
+      return true
+    }) || null
+  }
 
   const totalPeriods = shuffledBlocks.reduce((sum, b) => sum + b.size, 0)
   const maxSlotsPerDay = {}
@@ -154,12 +170,15 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     // 22 → 5×2 days + 4×3 days
     // 23 → 5×3 days + 4×2 days
     // 24 → 5×4 days + 4×1 day
-    // 25 → 5×5 days
+    // 25 → 5×5 days; 26 → one 6-period day and four 5-period days.
     const extraDays = Math.min(DAYS.length, totalPeriods - 20)
     DAYS.forEach((day, idx) => {
       const rotated = (idx + attemptSeed) % DAYS.length
       maxSlotsPerDay[day] = rotated < extraDays ? 5 : 4
     })
+    if (totalPeriods > 25) {
+      maxSlotsPerDay[DAYS[attemptSeed % DAYS.length]] = 6
+    }
   } else {
     // For < 20 hrs: distribute evenly across days
     const base = Math.floor(totalPeriods / DAYS.length)
@@ -184,21 +203,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     do {
       const day = DAYS[dayIdx]
       if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
-        let assignedLecturer = block.lecturer
-        let hasClash = false
-        if (assignedLecturer) {
-          const lid = assignedLecturer.id
-          if (!isLecturerAvailableOnDay(assignedLecturer, day)) hasClash = true
-          if (!hasClash && (localDailyLoad[lid]?.[day] || 0) + block.size > 3) hasClash = true
-          if (!hasClash) {
-            for (let i = 0; i < block.size; i++) {
-              if (isLecturerSlotTaken(lid, day, daySlotCount[day] + i)) {
-                hasClash = true
-                break
-              }
-            }
-          }
-        }
+        // Pick the preferred lecturer when possible, otherwise an equally
+        // qualified lecturer who is available for every period in this block.
+        const assignedLecturer = findLecturerForBlock(
+          block.subject, day, daySlotCount[day], block.size, block.lecturer
+        )
+        let hasClash = !assignedLecturer
         const chronoDayIdx = DAYS.indexOf(day)
         if (!hasClash && block.type === 'Lab' && theoryDayIdxMap[block.subject.id] !== undefined) {
           if (chronoDayIdx < theoryDayIdxMap[block.subject.id]) hasClash = true
@@ -239,29 +249,9 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
           const day = DAYS[tryDayIdx]
           if (daySlotCount[day] >= getMaxSlots(day)) continue
 
-          // Check primary assigned lecturer
-          let usableLecturer = null
-          if (assignedLecturer && isLecturerAvailableOnDay(assignedLecturer, day)) {
-            const lid = assignedLecturer.id
-            const loadOnDay = localDailyLoad[lid]?.[day] || 0
-            if (loadOnDay + 1 <= 3 && !isLecturerSlotTaken(lid, day, daySlotCount[day])) {
-              usableLecturer = assignedLecturer
-            }
-          }
-
-          // If primary assigned lecturer is busy/clashing, search alternate qualified lecturers for this subject
-          if (!usableLecturer && getSubjectLecturers) {
-            const altQualified = getSubjectLecturers(block.subject.id)
-            const freeAlt = altQualified.find(altL => {
-              if (!isLecturerAvailableOnDay(altL, day)) return false
-              if ((localDailyLoad[altL.id]?.[day] || 0) + 1 > 3) return false
-              if (isLecturerSlotTaken(altL.id, day, daySlotCount[day])) return false
-              return true
-            })
-            if (freeAlt) {
-              usableLecturer = freeAlt
-            }
-          }
+          const usableLecturer = findLecturerForBlock(
+            block.subject, day, daySlotCount[day], 1, assignedLecturer
+          )
 
           const slotIndex = daySlotCount[day]
           // Only assign usableLecturer if they are 100% clash-free; otherwise assign null (Unassigned)
@@ -302,26 +292,17 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     })
   })
 
-  for (const day of DAYS) {
-    const entries = timetable[day]
-    if (!entries || entries.length <= 1) continue
-    const lecturerOrder = []
-    const seen = new Set()
-    for (const entry of entries) {
-      const lid = entry.lecturer?.id || '__none__'
-      if (!seen.has(lid)) { seen.add(lid); lecturerOrder.push(lid) }
-    }
-    timetable[day] = entries.sort((a, b) => {
-      const aIdx = lecturerOrder.indexOf(a.lecturer?.id || '__none__')
-      const bIdx = lecturerOrder.indexOf(b.lecturer?.id || '__none__')
-      if (aIdx !== bIdx) return aIdx - bIdx
-      if (a.type === 'Theory' && b.type === 'Lab') return -1
-      if (a.type === 'Lab' && b.type === 'Theory') return 1
-      return 0
-    })
-    timetable[day].forEach((item, idx) => { item.slotIndex = idx })
-  }
+  // Keep placement order and slot indexes intact. Reordering here would move
+  // a lecturer into another time slot after conflicts have already been checked.
   return { timetable, emptyLecturerCount, clashCount }
+}
+
+// Morning slot 5 is 1:00–2:00 PM, which overlaps afternoon slot 0.
+function getBlockingSlotIndex(currentShift, otherShift, otherSlotIndex) {
+  if (currentShift === otherShift) return otherSlotIndex
+  if (currentShift === 'Morning' && otherShift === 'Afternoon' && otherSlotIndex === 0) return 5
+  if (currentShift === 'Afternoon' && otherShift === 'Morning' && otherSlotIndex === 5) return 0
+  return null
 }
 
 function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap) {
@@ -438,11 +419,11 @@ export function Timetable() {
               savedGrid[day].forEach(session => {
                 if (session.lecturer) {
                   const lid = session.lecturer.id
-                  const isSameShift = !savedClass || !currentShift || savedClass.shift === currentShift
-                  if (isSameShift) {
+                  const blockingSlot = getBlockingSlotIndex(currentShift, savedClass?.shift || currentShift, session.slotIndex)
+                  if (blockingSlot !== null) {
                     if (!busyMap[lid]) busyMap[lid] = {}
                     if (!busyMap[lid][day]) busyMap[lid][day] = {}
-                    busyMap[lid][day][session.slotIndex] = true
+                    busyMap[lid][day][blockingSlot] = true
                   }
                 }
               })
@@ -529,14 +510,14 @@ export function Timetable() {
                   classCountMap[lid].add(savedClassId)
 
                   // Track daily load for classes in the SAME SHIFT (max 3 periods per shift per day)
-                  const isSameShift = !savedClass || savedClass.shift === selectedClass.shift
-                  if (isSameShift) {
+                  const blockingSlot = getBlockingSlotIndex(selectedClass.shift, savedClass?.shift || selectedClass.shift, session.slotIndex)
+                  if (blockingSlot !== null) {
                     if (!dailyLoad[lid]) dailyLoad[lid] = {}
                     dailyLoad[lid][day] = (dailyLoad[lid][day] || 0) + 1
 
                     if (!busyMap[lid]) busyMap[lid] = {}
                     if (!busyMap[lid][day]) busyMap[lid][day] = {}
-                    busyMap[lid][day][session.slotIndex] = true
+                    busyMap[lid][day][blockingSlot] = true
                   }
                 }
               })
@@ -556,8 +537,63 @@ export function Timetable() {
     setIsSaved(false)
   }
 
+  const validateTimetableBeforeSave = async () => {
+    const busySlots = new Set()
+    const currentSlots = new Set()
+    const unassignedSessions = []
+    const invalidSessions = []
+    const currentGrid = timetable || {}
+
+    for (const day of DAYS) {
+      for (const session of currentGrid[day] || []) {
+        if (!session.lecturer?.id) {
+          unassignedSessions.push(`${session.subject?.name || 'Subject'} on ${day}`)
+          continue
+        }
+        const lecturer = lecturers.find(item => item.id === session.lecturer.id) || session.lecturer
+        if (!isLecturerAvailableOnDay(lecturer, day)) {
+          invalidSessions.push(`${lecturer.name} is unavailable on ${day}`)
+          continue
+        }
+        const key = `${lecturer.id}|${day}|${session.slotIndex}`
+        if (currentSlots.has(key)) invalidSessions.push(`${lecturer.name} is double-booked on ${day}`)
+        currentSlots.add(key)
+      }
+    }
+
+    if (unassignedSessions.length) return `Cannot save: ${unassignedSessions[0]} has no lecturer.`
+    if (invalidSessions.length) return `Cannot save: ${invalidSessions[0]}.`
+
+    const { data: savedGrids, error } = await supabase.from('timetables').select('class_id, grid')
+    if (error) return `Cannot verify lecturer availability: ${error.message}`
+    for (const saved of savedGrids || []) {
+      if (saved.class_id === selectedClassId) continue
+      const savedClass = classes.find(item => item.id === saved.class_id)
+      for (const day of DAYS) {
+        for (const session of saved.grid?.[day] || []) {
+          const blockingSlot = getBlockingSlotIndex(selectedClass?.shift, savedClass?.shift || selectedClass?.shift, session.slotIndex)
+          if (session.lecturer?.id && blockingSlot !== null) busySlots.add(`${session.lecturer.id}|${day}|${blockingSlot}`)
+        }
+      }
+    }
+
+    for (const day of DAYS) {
+      for (const session of currentGrid[day] || []) {
+        if (session.lecturer?.id && busySlots.has(`${session.lecturer.id}|${day}|${session.slotIndex}`)) {
+          return `Cannot save: ${session.lecturer.name} is already booked on ${day} at this time.`
+        }
+      }
+    }
+    return null
+  }
+
   const handleSaveTimetable = async () => {
     if (!timetable || !selectedClassId || !selectedSemesterId) return
+    const validationError = await validateTimetableBeforeSave()
+    if (validationError) {
+      setNotice(validationError, 'error')
+      return
+    }
     const existingId = savedTimetableMap[`${selectedClassId}_${selectedSemesterId}`]
     let error
     if (existingId) {
@@ -700,7 +736,7 @@ export function Timetable() {
     if (shiftType === 'Morning') {
       const morningEarly = [
         '07:00 AM - 07:45 AM', '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM',
-        '10:15 AM - 11:15 AM', '11:15 AM - 12:15 PM', '12:15 PM - 01:15 PM', '01:15 PM - 02:15 PM'
+        '10:15 AM - 11:15 AM', '11:15 AM - 12:15 PM', '01:00 PM - 02:00 PM'
       ]
       const morningDefault = [
         '07:45 AM - 08:45 AM', '08:45 AM - 09:45 AM', '10:15 AM - 11:15 AM',

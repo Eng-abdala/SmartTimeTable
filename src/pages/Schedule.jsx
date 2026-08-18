@@ -103,9 +103,10 @@ function exportTableToExcel(tableElement, filename) {
 
 function getSlotTimeLabel(shift, slotIndex) {
   if (shift === 'Afternoon') {
-    const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM']
+    const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM', '5:00–5:50 PM', '5:50–6:40 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
   } else {
+    if (slotIndex === 5) return '1:00–2:00 PM'
     if (slotIndex === 4) return '7:00–7:45 AM'
     const slots = ['7:45–8:45 AM', '8:45–9:45 AM', '10:15–11:15 AM', '11:15 AM–12:15 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
@@ -291,7 +292,7 @@ export function Schedule() {
     const clashCellKeys = new Set()
 
     DAYS.forEach(day => {
-      const slotIndices = [0, 1, 2, 3, 4]
+      const slotIndices = [0, 1, 2, 3, 4, 5]
       
       const shifts = ['Morning', 'Afternoon']
       shifts.forEach(shift => {
@@ -365,12 +366,20 @@ export function Schedule() {
     if (!classList.length) return null
 
     const isMorning = shiftName === 'Morning'
+    const highestSlotByDay = {}
+    DAYS.forEach(day => {
+      highestSlotByDay[day] = classList.reduce((highest, cls) => {
+        const slotIndexes = (timetablesByClass[cls.id]?.[day] || []).map(session => session?.slotIndex ?? -1)
+        return Math.max(highest, ...slotIndexes, -1)
+      }, -1)
+    })
 
-    // Compute per-class per-day overflow (slotIndex 4 present = overflow)
+    // Compute per-class per-day overflow (slotIndex 4/5 present = overflow)
     const classOverflowMap = {} // { classId: { day: boolean } }
     const dayHasOverflow = {}   // { day: boolean } — true if ANY class has overflow that day
+    const dayHasSixthPeriod = {} // { day: boolean } — true if ANY class has a sixth period
     if (isMorning) {
-      DAYS.forEach(day => { dayHasOverflow[day] = false })
+      DAYS.forEach(day => { dayHasOverflow[day] = false; dayHasSixthPeriod[day] = false })
       classList.forEach(cls => {
         classOverflowMap[cls.id] = {}
         const grid = timetablesByClass[cls.id]
@@ -378,6 +387,7 @@ export function Schedule() {
           const hasOvf = !!(grid && grid[day] && grid[day].some(s => s.slotIndex === 4))
           classOverflowMap[cls.id][day] = hasOvf
           if (hasOvf) dayHasOverflow[day] = true
+          if (grid && grid[day] && grid[day].some(s => s.slotIndex === 5)) dayHasSixthPeriod[day] = true
         })
       })
     }
@@ -416,10 +426,15 @@ export function Schedule() {
 
             <tbody className="divide-y divide-black bg-white">
               {DAYS.map(day => {
-                // Overflow days show 6 rows (include 7:00–7:45 early slot).
+                // Overflow days include the 7:00 AM early slot. A sixth period
+                // resumes at 1:00 PM after the midday break.
                 // Standard days show 5 rows starting at 7:45 AM.
                 const daySlots = !isMorning
-                  ? slots
+                  ? [
+                      ...slots,
+                      ...(highestSlotByDay[day] >= 4 ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
+                      ...(highestSlotByDay[day] >= 5 ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
+                    ]
                   : dayHasOverflow[day]
                     ? [
                         { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
@@ -428,6 +443,10 @@ export function Schedule() {
                         { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
                         { slotIndex: 3, time: '10:15 AM – 11:15 AM' },
                         { slotIndex: 4, time: '11:15 AM – 12:15 PM' },
+                        ...(dayHasSixthPeriod[day] ? [
+                          { isBreak: true, time: '12:15 PM – 1:00 PM (Break)' },
+                          { slotIndex: 5, time: '1:00 PM – 2:00 PM' },
+                        ] : []),
                       ]
                     : [
                         { slotIndex: 0, time: '7:45 AM – 8:45 AM' },

@@ -13,6 +13,7 @@ export function AppLayout() {
   const [classes, setClasses] = useState([])
   const [academicYears, setAcademicYears] = useState([])
   const [departments, setDepartments] = useState([])
+  const [departmentCatalog, setDepartmentCatalog] = useState([])
   const [semesterLecturers, setSemesterLecturers] = useState([])
 
   const [loading, setLoading] = useState(true)
@@ -33,13 +34,14 @@ export function AppLayout() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes, semLecRes] = await Promise.all([
+      const [semRes, subRes, lecRes, clsRes, yrRes, deptRes, deptCatalogRes, semLecRes] = await Promise.all([
         supabase.from('semesters').select('*').order('name', { ascending: false }),
         supabase.from('subjects').select('*').order('name'),
         supabase.from('lecturers').select('*').order('name'),
         supabase.from('classes').select('*').order('name'),
         supabase.from('academic_years').select('*').order('year', { ascending: false }),
         supabase.from('departments').select('*').order('name'),
+        supabase.from('department_catalog').select('*').order('name'),
         supabase.from('semester_lecturers').select('*')
       ])
       if (semRes.error) throw semRes.error
@@ -48,6 +50,7 @@ export function AppLayout() {
       if (clsRes.error) throw clsRes.error
       if (yrRes.error) throw yrRes.error
       if (deptRes.error) throw deptRes.error
+      if (deptCatalogRes.error) throw deptCatalogRes.error
       if (semLecRes.error) console.warn('Could not load semester_lecturers:', semLecRes.error)
 
       const loadedClasses = clsRes.data || []
@@ -59,6 +62,7 @@ export function AppLayout() {
       setClasses(loadedClasses)
       setAcademicYears((yrRes.data || []).map(y => y.year))
       setDepartments(deptRes.data || [])
+      setDepartmentCatalog(deptCatalogRes.data || [])
       setSemesterLecturers(semLecRes.data || [])
     } catch (err) {
       notify(`Could not load data: ${err.message}`, 'error')
@@ -265,7 +269,7 @@ export function AppLayout() {
           <div className="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm">Loading timetable data…</div>
         ) : (
           <Outlet context={{
-            semesters, subjects, lecturers, classes, academicYears, departments,
+            semesters, subjects, lecturers, classes, academicYears, departments, departmentCatalog,
             setModal, remove, metrics, loadData, setNotice: notify,
             semesterLecturers, setSemesterLecturers,
             assignLecturersToSubject,
@@ -283,6 +287,7 @@ export function AppLayout() {
           subjects={subjects}
           lecturers={lecturers}
           classes={classes}
+          departments={departmentCatalog}
           getLecturerTaughtSubjects={getLecturerTaughtSubjects}
           saveLecturerTaughtSubjects={saveLecturerTaughtSubjects}
           onClose={() => setModal(null)}

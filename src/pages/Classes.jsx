@@ -6,19 +6,8 @@ import { Empty } from '../components/Empty'
 import { supabase } from '../lib/supabase'
 import { getYearSemesterMap } from '../lib/semesterUtils'
 
-const STANDARD_DEPARTMENTS = [
-  { name: 'Computer Application', code: 'CA' },
-  { name: 'Computer Network', code: 'CN' },
-  { name: 'Computer Multimedia', code: 'CM' },
- 
-]
-
-function generateId() {
-  return Math.random().toString(36).substr(2, 9)
-}
-
 export function Classes() {
-  const { classes, academicYears, departments, semesters, setModal, remove, loadData, setNotice } = useOutletContext()
+  const { classes, academicYears, departments, departmentCatalog, semesters, setModal, remove, loadData, setNotice } = useOutletContext()
   const navigate = useNavigate()
 
   // ── Navigation state ───────────────────────────────────────────────────────
@@ -29,9 +18,7 @@ export function Classes() {
   const [showYearForm, setShowYearForm] = useState(false)
   const [yearInput, setYearInput] = useState(new Date().getFullYear())
 
-  const [showDeptForm, setShowDeptForm] = useState(false)
-  const [editingDept, setEditingDept] = useState(null)
-  const [deptForm, setDeptForm] = useState({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
+  const [showDeptPicker, setShowDeptPicker] = useState(false)
   const [deptError, setDeptError] = useState('')
 
 
@@ -179,47 +166,22 @@ export function Classes() {
   }
 
 
-  // ── Department CRUD ────────────────────────────────────────────────────────
-  const addDepartment = async () => {
-    if (!deptForm.name.trim() || !deptForm.shortform.trim()) {
-      setDeptError('Name and shortform are required.')
+  // Add an existing catalogue department to the selected Class of year.
+  const addDepartmentToYear = async (department) => {
+    if (!department || !selectedYear) return
+    if (departments.some(d => d.shortform === department.shortform && d.intake_year === selectedYear)) {
+      setDeptError(`${department.name} is already part of Class of ${selectedYear}.`)
       return
     }
-
-    const shortform = deptForm.shortform.trim().toUpperCase()
-
-    if (editingDept) {
-      if (departments.some(d => d.id !== editingDept && d.shortform === shortform && d.intake_year === selectedYear)) {
-        setDeptError(`Department "${deptForm.name}" already exists for ${selectedYear}.`)
-        return
-      }
-      
-      const { error } = await supabase.from('departments').update({
-        name: deptForm.name.trim(),
-        shortform
-      }).eq('id', editingDept)
-
-      if (error) { setDeptError(error.message); return }
-    } else {
-      if (departments.some(d => d.shortform === shortform && d.intake_year === selectedYear)) {
-        setDeptError(`Department "${deptForm.name}" already exists for ${selectedYear}.`)
-        return
-      }
-      
-      const { error } = await supabase.from('departments').insert([{
-        name: deptForm.name.trim(),
-        shortform,
-        intake_year: selectedYear,
-      }])
-
-      if (error) { setDeptError(error.message); return }
-    }
-
+    const { error } = await supabase.from('departments').insert([{
+      name: department.name,
+      shortform: department.shortform,
+      intake_year: selectedYear,
+    }])
+    if (error) { setDeptError(error.message); return }
     await loadData()
-    setDeptForm({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
-    setEditingDept(null)
     setDeptError('')
-    setShowDeptForm(false)
+    setShowDeptPicker(false)
   }
 
   const removeDepartment = async (deptId) => {
@@ -235,18 +197,6 @@ export function Classes() {
     }
     
     await loadData()
-  }
-
-  const openDeptForm = (dept = null) => {
-    setDeptError('')
-    if (dept) {
-      setEditingDept(dept.id)
-      setDeptForm({ name: dept.name, shortform: dept.shortform })
-    } else {
-      setEditingDept(null)
-      setDeptForm({ name: STANDARD_DEPARTMENTS[0].name, shortform: STANDARD_DEPARTMENTS[0].code })
-    }
-    setShowDeptForm(true)
   }
 
   // ── Derived data ───────────────────────────────────────────────────────────
@@ -365,74 +315,52 @@ export function Classes() {
             <Icon name="back" className="h-4 w-4" />Back to Academic Years
           </button>
           <button
-            onClick={() => openDeptForm()}
+            onClick={() => { setDeptError(''); setShowDeptPicker(true) }}
             className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-800"
           >
             <Icon name="plus" className="h-4 w-4" />Add Department
           </button>
         </div>
 
-        {/* ── Add / Edit Department Modal ── */}
-        {showDeptForm && (
+        {/* ── Select an existing Department ── */}
+        {showDeptPicker && (
           <div className="fixed inset-0 z-20 grid place-items-center bg-brand-950/45 p-4 overflow-y-auto">
-            <form
-              onSubmit={e => { e.preventDefault(); addDepartment() }}
-              className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl my-8"
-            >
+            <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl my-8">
               <div className="mb-6 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-brand-950">{editingDept ? 'Edit' : 'Add'} Department</h2>
-                <button type="button" onClick={() => setShowDeptForm(false)} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
+                <h2 className="text-xl font-bold text-brand-950">Add Department</h2>
+                <button type="button" onClick={() => setShowDeptPicker(false)} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
               </div>
-              <div className="space-y-4">
-                <label className="block text-sm font-semibold text-brand-950">
-                  Department Name <span className="text-rose-500">*</span>
-                  <select
-                    value={deptForm.name}
-                    onChange={e => { 
-                      const selectedName = e.target.value;
-                      const dept = STANDARD_DEPARTMENTS.find(d => d.name === selectedName);
-                      setDeptForm({ ...deptForm, name: selectedName, shortform: dept ? dept.code : '' });
-                      setDeptError('');
-                    }}
-                    required
-                    className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600"
-                  >
-                    {STANDARD_DEPARTMENTS.map(d => (
-                      <option key={d.code} value={d.name}>{d.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-sm font-semibold text-brand-950">
-                  Shortform (Auto-generated)
-                  <input
-                    value={deptForm.shortform}
-                    readOnly
-                    className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 font-bold text-slate-500 outline-none"
-                  />
-                </label>
-
-                {deptForm.shortform && (
-                  <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-brand-700">
-                    Class name preview: <strong>{deptForm.shortform.toUpperCase()}{String(selectedYear).slice(-2)}__</strong>
-                  </div>
-                )}
-
-                {deptError && (
-                  <div className="flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-                    <span className="mt-0.5 shrink-0">⚠</span>
-                    <span>{deptError}</span>
-                  </div>
-                )}
-              </div>
-              <button className="mt-4 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800">
-                {editingDept ? 'Save Changes' : 'Create Department'}
-              </button>
-            </form>
+              <p className="mb-4 text-sm text-slate-500">Choose a department already managed on the Semesters page.</p>
+              {!departmentCatalog.length ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                  No departments available. Create one on the Semesters page first.
+                </div>
+              ) : (
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {departmentCatalog.map(department => {
+                    const alreadyAdded = departments.some(d => d.shortform === department.shortform && d.intake_year === selectedYear)
+                    return (
+                      <button
+                        key={department.id}
+                        type="button"
+                        disabled={alreadyAdded}
+                        onClick={() => addDepartmentToYear(department)}
+                        className="flex w-full items-center justify-between rounded-xl border border-slate-200 px-4 py-3 text-left transition hover:border-brand-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <span><b className="block text-sm text-brand-950">{department.name}</b><span className="text-xs text-slate-500">{department.shortform}</span></span>
+                        <span className="text-xs font-semibold text-brand-600">{alreadyAdded ? 'Added' : 'Select'}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {deptError && <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">{deptError}</div>}
+            </div>
           </div>
         )}
 
         {!yearDepartments.length ? (
-          <Empty title={`No departments for Class of ${selectedYear}`} text='Click "Add Department" to create one.' />
+          <Empty title={`No departments for Class of ${selectedYear}`} text='Click "Add Department" to select one.' />
         ) : (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {yearDepartments.map((dept) => (
@@ -443,13 +371,6 @@ export function Classes() {
                 <div className="flex items-start justify-between">
                   <span className="rounded-lg bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dept.shortform}</span>
                   <div className="flex items-center gap-1">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openDeptForm(dept) }}
-                      className="rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-cyan-50 hover:text-brand-600 group-hover:opacity-100"
-                      title="Edit Department"
-                    >
-                      <Icon name="edit" className="h-3.5 w-3.5" />
-                    </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); removeDepartment(dept.id) }}
                       className="rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-rose-50 hover:text-rose-500 group-hover:opacity-100"

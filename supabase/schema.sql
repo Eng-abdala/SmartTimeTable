@@ -55,6 +55,32 @@ create table if not exists public.classes (
   semester_id uuid references public.semesters(id) on delete set null
 );
 
+-- Departments are created per academic year from the Classes page. Semesters
+-- use their shortform so curricula from Semester 4 onward remain separate.
+create table if not exists public.academic_years (
+  id uuid primary key default gen_random_uuid(),
+  year integer not null unique,
+  created_at timestamptz default now()
+);
+
+create table if not exists public.departments (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  shortform text not null,
+  intake_year integer not null references public.academic_years(year) on delete cascade,
+  created_at timestamptz default now(),
+  unique (shortform, intake_year)
+);
+
+-- Global department catalogue. Departments are managed on the Semesters page,
+-- then selected for each academic year on the Classes page.
+create table if not exists public.department_catalog (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  shortform text not null unique,
+  created_at timestamptz not null default now()
+);
+
 -- Migration: add semester_id to existing classes table if it doesn't exist
 do $$
 begin
@@ -77,6 +103,9 @@ alter table public.semesters enable row level security;
 alter table public.subjects enable row level security;
 alter table public.lecturers enable row level security;
 alter table public.classes enable row level security;
+alter table public.academic_years enable row level security;
+alter table public.departments enable row level security;
+alter table public.department_catalog enable row level security;
 alter table public.subject_lecturers enable row level security;
 alter table public.semester_lecturers enable row level security;
 
@@ -91,6 +120,12 @@ create policy "Phase 1 semester access" on public.semesters for all to anon usin
 create policy "Phase 1 subject access" on public.subjects for all to anon using (true) with check (true);
 create policy "Phase 1 lecturer access" on public.lecturers for all to anon using (true) with check (true);
 create policy "Phase 1 class access" on public.classes for all to anon using (true) with check (true);
+drop policy if exists "Phase 1 academic year access" on public.academic_years;
+drop policy if exists "Phase 1 department access" on public.departments;
+create policy "Phase 1 academic year access" on public.academic_years for all to anon using (true) with check (true);
+create policy "Phase 1 department access" on public.departments for all to anon using (true) with check (true);
+drop policy if exists "Phase 1 department catalog access" on public.department_catalog;
+create policy "Phase 1 department catalog access" on public.department_catalog for all to anon using (true) with check (true);
 create policy "Phase 1 subject lecturers access" on public.subject_lecturers for all to anon using (true) with check (true);
 create policy "Phase 1 semester lecturers access" on public.semester_lecturers for all to anon using (true) with check (true);
 
@@ -108,3 +143,55 @@ create table if not exists public.timetable_slots (
 alter table public.timetable_slots enable row level security;
 drop policy if exists "Phase 1 timetable access" on public.timetable_slots;
 create policy "Phase 1 timetable access" on public.timetable_slots for all to anon using (true) with check (true);
+
+-- Protect curriculum and department records from accidental deletion.
+create or replace function public.prevent_used_semester_delete()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.subjects where semester_id = old.id) then
+    raise exception 'Cannot delete this semester because it contains curriculum subjects.';
+  end if;
+  if exists (select 1 from public.semester_lecturers where semester_id = old.id) then
+    raise exception 'Cannot delete this semester because lecturers are assigned to it.';
+  end if;
+  if exists (select 1 from public.classes where semester_id = old.id) then
+    raise exception 'Cannot delete this semester because it is assigned to a class.';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists protect_used_semester_delete on public.semesters;
+create trigger protect_used_semester_delete
+before delete on public.semesters
+for each row execute function public.prevent_used_semester_delete();
+
+create or replace function public.delete_empty_department_catalog()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.semesters where department = old.shortform) then
+    raise exception 'Cannot delete this department because it has semesters.';
+  end if;
+  if exists (
+    select 1 from public.departments d
+    join public.classes c on c.intake_year = d.intake_year
+      and upper(c.name) like upper(old.shortform) || '%'
+    where d.shortform = old.shortform
+  ) then
+    raise exception 'Cannot delete this department because it is used by classes.';
+  end if;
+  delete from public.departments where shortform = old.shortform;
+  return old;
+end;
+$$;
+
+drop trigger if exists delete_empty_department_catalog on public.department_catalog;
+create trigger delete_empty_department_catalog
+before delete on public.department_catalog
+for each row execute function public.delete_empty_department_catalog();

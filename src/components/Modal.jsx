@@ -4,7 +4,7 @@ import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], classes = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
+export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], classes = [], departments = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
   const type = typeof modal === 'string' ? modal : modal.type
   const editing = typeof modal === 'object' && modal.data?.id
   const lecturerId = typeof modal === 'object' ? modal.data?.id : null
@@ -45,6 +45,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
 
   const [formError, setFormError] = useState('')
   const [customSubject, setCustomSubject] = useState('')
+  const departmentOptions = Array.from(new Map(departments.map(dept => [dept.shortform, dept])).values())
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   // Unique list of subjects from curriculum
   const availableSubjectNames = Array.from(new Set((subjects || []).map(s => s.name).filter(Boolean)))
@@ -194,9 +196,9 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
                       className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 font-normal text-slate-700 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-600/10"
                     >
                       <option value="">-- Select Department --</option>
-                      <option value="CA">Computer Application (CA)</option>
-                      <option value="CN">Computer Networking (CN)</option>
-                      <option value="CM">Computer Multimedia (CM)</option>
+                      {departmentOptions.map(dept => (
+                        <option key={dept.shortform} value={dept.shortform}>{dept.name} ({dept.shortform})</option>
+                      ))}
                     </select>
                   </label>
                 )
