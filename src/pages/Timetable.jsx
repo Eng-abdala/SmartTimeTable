@@ -7,6 +7,11 @@ import { supabase } from '../lib/supabase'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
+function getSemesterLevel(semester) {
+  const match = semester?.name?.match(/semester\s*(\d+)/i)
+  return match ? Number(match[1]) : null
+}
+
 const SHIFT_SLOTS = {
   Morning: [
     { id: 1, label: 'Period 1', time: '8:00 AM – 9:20 AM' },
@@ -102,7 +107,19 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   semesterSubjects.forEach(sub => {
     const lecturer = subjectLecturerMap.get(sub.id)
     const createBlocksForHours = (type, totalHours) => {
-      let h = totalHours
+      const hours = Number(totalHours) || 0
+
+      // A three-hour subject remains a 2+1 split. Only a five-hour subject
+      // may use a three-period run. Across generation attempts we also try
+      // both 3+2 and 2+3, then fall back to the allowed 2+2+1 layout.
+      if (hours === 5) {
+        const fiveHourLayouts = [[3, 2], [2, 3], [2, 2, 1]]
+        const layout = fiveHourLayouts[attemptSeed % fiveHourLayouts.length]
+        layout.forEach(size => blocks.push({ subject: sub, type, lecturer, size }))
+        return
+      }
+
+      let h = hours
       while (h > 0) {
         if (h >= 2) {
           blocks.push({ subject: sub, type, lecturer, size: 2 })
@@ -145,20 +162,19 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     return !!(busyMap?.[lid]?.[day]?.[slotIndex] || lecturerSlotMap[lid]?.[day]?.[slotIndex])
   }
   const findLecturerForBlock = (subject, day, startSlot, size, preferredLecturer) => {
-    const qualified = getSubjectLecturers ? getSubjectLecturers(subject.id) : []
-    const candidates = Array.from(new Map([
-      ...(preferredLecturer ? [[preferredLecturer.id, preferredLecturer]] : []),
-      ...qualified.map(lecturer => [lecturer.id, lecturer]),
-    ]).values())
+    // A lecturer is selected once per subject before blocks are created.  Do
+    // not replace that selection for a later block: doing so made the same
+    // subject show different lecturers in different rows (for example, when
+    // a later Sunday block could not use the selected lecturer).
+    if (!preferredLecturer) return null
 
-    return candidates.find(lecturer => {
-      if (!isLecturerAvailableOnDay(lecturer, day)) return false
-      if ((localDailyLoad[lecturer.id]?.[day] || 0) + size > 3) return false
-      for (let offset = 0; offset < size; offset++) {
-        if (isLecturerSlotTaken(lecturer.id, day, startSlot + offset)) return false
-      }
-      return true
-    }) || null
+    const lecturer = preferredLecturer
+    if (!isLecturerAvailableOnDay(lecturer, day)) return null
+    if ((localDailyLoad[lecturer.id]?.[day] || 0) + size > 3) return null
+    for (let offset = 0; offset < size; offset++) {
+      if (isLecturerSlotTaken(lecturer.id, day, startSlot + offset)) return null
+    }
+    return lecturer
   }
 
   const totalPeriods = shuffledBlocks.reduce((sum, b) => sum + b.size, 0)
@@ -195,6 +211,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   const theoryDayIdxMap = {}
   let dayIdx = attemptSeed % DAYS.length
   let emptyLecturerCount = 0
+  let layoutViolationCount = 0
 
   for (const block of shuffledBlocks) {
     let placed = false
@@ -203,8 +220,8 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     do {
       const day = DAYS[dayIdx]
       if (daySlotCount[day] + block.size <= getMaxSlots(day)) {
-        // Pick the preferred lecturer when possible, otherwise an equally
-        // qualified lecturer who is available for every period in this block.
+        // Every block for a subject must retain that subject's one selected
+        // lecturer; an unavailable slot is handled by the placement fallback.
         const assignedLecturer = findLecturerForBlock(
           block.subject, day, daySlotCount[day], block.size, block.lecturer
         )
@@ -240,6 +257,9 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
     if (!placed) {
       const assignedLecturer = block.lecturer
+      // Keep a failed 3-period run visible to the scorer. This allows a later
+      // attempt to try 2+3 or 2+2+1 instead of accepting a split 3+1+1 plan.
+      if (block.size === 3) layoutViolationCount++
       let remainingSize = block.size
       let searchDayIdx = dayIdx
       while (remainingSize > 0) {
@@ -294,7 +314,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
   // Keep placement order and slot indexes intact. Reordering here would move
   // a lecturer into another time slot after conflicts have already been checked.
-  return { timetable, emptyLecturerCount, clashCount }
+  return { timetable, emptyLecturerCount, clashCount, layoutViolationCount }
 }
 
 // Morning slot 5 is 1:00–2:00 PM, which overlaps afternoon slot 0.
@@ -311,8 +331,8 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
 
   for (let attempt = 0; attempt < 50; attempt++) {
     const res = generateSinglePassTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, classCountMap, attempt)
-    const score = (res.clashCount * 10000) + res.emptyLecturerCount
-    if (res.clashCount === 0 && res.emptyLecturerCount === 0) return res.timetable
+    const score = (res.clashCount * 10000) + (res.emptyLecturerCount * 100) + res.layoutViolationCount
+    if (res.clashCount === 0 && res.emptyLecturerCount === 0 && res.layoutViolationCount === 0) return res.timetable
     if (score < minScore) {
       minScore = score
       bestGrid = res.timetable
@@ -322,13 +342,15 @@ function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, 
 }
 
 export function Timetable() {
-  const { classes, semesters, subjects, lecturers, academicYears, getRandomLecturerForClass, getSubjectLecturers, setNotice, loadData } = useOutletContext()
+  const { classes, semesters, subjects, lecturers, departments, getRandomLecturerForClass, getSubjectLecturers, setNotice, loadData } = useOutletContext()
   const navigate = useNavigate()
 
   const [searchParams, setSearchParams] = useSearchParams()
   const urlClassId = searchParams.get('classId')
 
   const [selectedSemesterId, setSelectedSemesterId] = useState(() => localStorage.getItem('tt_semester') || '')
+  const [selectedSemesterLevel, setSelectedSemesterLevel] = useState(() => localStorage.getItem('tt_semester_level') || '')
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState(() => localStorage.getItem('tt_department') || '')
   const [selectedClassId, setSelectedClassId] = useState(() => urlClassId || localStorage.getItem('tt_class') || '')
   const [timetable, setTimetable] = useState(null)
   const [generated, setGenerated] = useState(false)
@@ -357,9 +379,14 @@ export function Timetable() {
     const cls = classes.find(c => c.id === urlClassId)
     if (cls?.semester_id) {
       setSelectedSemesterId(cls.semester_id)
+      setSelectedSemesterLevel(String(getSemesterLevel(semesters.find(s => s.id === cls.semester_id)) || ''))
+      const legacyDepartment = !cls.department_id && departments.find(d =>
+        d.intake_year === cls.intake_year && cls.name.toUpperCase().startsWith(d.shortform.toUpperCase())
+      )
+      setSelectedDepartmentId(cls.department_id || legacyDepartment?.id || '')
       setSelectedClassId(urlClassId)
     }
-  }, [urlClassId, classes])
+  }, [urlClassId, classes, departments, semesters])
 
   // Load timetable on mount if URL has classId
   useEffect(() => {
@@ -443,25 +470,53 @@ export function Timetable() {
   }, [selectedClassId, selectedClass, loadGlobalBusyMap])
 
   // Persist selections to localStorage
-  const saveSemester = (v) => { setSelectedSemesterId(v); localStorage.setItem('tt_semester', v); saveClass('') }
-  const saveClass = (v) => { 
-    setSelectedClassId(v); 
-    localStorage.setItem('tt_class', v);
+  const saveSemester = (level) => {
+    setSelectedSemesterLevel(level)
+    localStorage.setItem('tt_semester_level', level)
+    setSelectedSemesterId('')
+    localStorage.removeItem('tt_semester')
+    saveDepartment('')
+  }
+  const saveDepartment = (v) => {
+    setSelectedDepartmentId(v)
+    localStorage.setItem('tt_department', v)
+    saveClass('')
+  }
+  const saveClass = (classId) => {
+    const classItem = classes.find(c => c.id === classId)
+    setSelectedClassId(classId)
+    setSelectedSemesterId(classItem?.semester_id || '')
+    localStorage.setItem('tt_class', classId)
+    if (classItem?.semester_id) localStorage.setItem('tt_semester', classItem.semester_id)
     setSearchParams({});
   }
 
-  // Classes filtered by selected semester (showing all assigned classes)
-  const semesterClasses = useMemo(() => {
-    if (!selectedSemesterId) return []
-    return classes.filter(c => c.semester_id === selectedSemesterId)
-  }, [classes, selectedSemesterId])
+  // Departments are derived from the selected semester's actual classes, so
+  // users cannot choose an unrelated department.
+  const semesterDepartments = useMemo(() => {
+    if (!selectedSemesterLevel) return []
+    const semesterClassList = classes.filter(c => String(getSemesterLevel(semesters.find(s => s.id === c.semester_id)) || '') === selectedSemesterLevel)
+    return departments.filter(d => semesterClassList.some(c =>
+      c.department_id === d.id ||
+      (!c.department_id && c.intake_year === d.intake_year && c.name.toUpperCase().startsWith(d.shortform.toUpperCase()))
+    )).sort((a, b) => a.name.localeCompare(b.name))
+  }, [classes, departments, semesters, selectedSemesterLevel])
 
-  // Only show semesters that have at least one class assigned
-  const sortedSemesters = useMemo(() => {
-    const assignedSemesterIds = new Set(classes.map(c => c.semester_id).filter(Boolean))
-    return [...semesters]
-      .filter(s => assignedSemesterIds.has(s.id))
-      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  // Classes filtered by selected semester and then selected department.
+  const semesterClasses = useMemo(() => {
+    if (!selectedSemesterLevel || !selectedDepartmentId) return []
+    const department = departments.find(d => d.id === selectedDepartmentId)
+    return classes.filter(c => String(getSemesterLevel(semesters.find(s => s.id === c.semester_id)) || '') === selectedSemesterLevel && (
+      c.department_id === selectedDepartmentId ||
+      (!c.department_id && department && c.intake_year === department.intake_year && c.name.toUpperCase().startsWith(department.shortform.toUpperCase()))
+    ))
+  }, [classes, departments, semesters, selectedSemesterLevel, selectedDepartmentId])
+
+  // Show each level once: the department is intentionally selected in step 2.
+  const semesterLevels = useMemo(() => {
+    const assignedIds = new Set(classes.map(c => c.semester_id).filter(Boolean))
+    return [...new Set(semesters.filter(s => assignedIds.has(s.id)).map(getSemesterLevel).filter(Boolean))]
+      .sort((a, b) => a - b)
   }, [semesters, classes])
 
   // Already has a timetable check (from DB)
@@ -542,6 +597,7 @@ export function Timetable() {
     const currentSlots = new Set()
     const unassignedSessions = []
     const invalidSessions = []
+    const subjectLecturerIds = new Map()
     const currentGrid = timetable || {}
 
     for (const day of DAYS) {
@@ -549,6 +605,15 @@ export function Timetable() {
         if (!session.lecturer?.id) {
           unassignedSessions.push(`${session.subject?.name || 'Subject'} on ${day}`)
           continue
+        }
+        const subjectId = session.subject?.id
+        if (subjectId) {
+          const selectedLecturerId = subjectLecturerIds.get(subjectId)
+          if (selectedLecturerId && selectedLecturerId !== session.lecturer.id) {
+            invalidSessions.push(`${session.subject?.name || 'Subject'} has more than one lecturer`)
+            continue
+          }
+          subjectLecturerIds.set(subjectId, session.lecturer.id)
         }
         const lecturer = lecturers.find(item => item.id === session.lecturer.id) || session.lecturer
         if (!isLecturerAvailableOnDay(lecturer, day)) {
@@ -1029,31 +1094,50 @@ export function Timetable() {
                 Semester
               </label>
               <select
-                value={selectedSemesterId}
+                value={selectedSemesterLevel}
                 onChange={e => saveSemester(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600"
               >
                 <option value="">— Select Semester —</option>
-                {sortedSemesters.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {semesterLevels.map(level => <option key={level} value={level}>Semester {level}</option>)}
               </select>
-              {sortedSemesters.length === 0 && (
+              {semesterLevels.length === 0 && (
                 <p className="mt-1.5 text-xs text-amber-600">No semesters have classes assigned yet. Go to <b>Classes</b> and use &ldquo;Set Semester&rdquo; on each year card.</p>
               )}
-              {selectedSemesterId && semesterClasses.length === 0 && (
-                <p className="mt-1.5 text-xs text-amber-600">No classes are assigned to this semester yet. Go to Classes and use &ldquo;Set Semester&rdquo; to assign them.</p>
+              {selectedSemesterLevel && semesterDepartments.length === 0 && (
+                <p className="mt-1.5 text-xs text-amber-600">No departments with classes are assigned to this semester yet. Go to Classes and assign a semester to the department&rsquo;s classes.</p>
               )}
             </div>
 
-            {/* Step 2 - Class */}
+            {/* Step 2 - Department */}
             <div>
               <label className="block text-sm font-bold text-brand-950 mb-1.5">
                 <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">2</span>
+                Department
+              </label>
+              <select
+                value={selectedDepartmentId}
+                onChange={e => saveDepartment(e.target.value)}
+                disabled={!selectedSemesterLevel}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
+              >
+                <option value="">— Select Department —</option>
+                {semesterDepartments.map(department => (
+                  <option key={department.id} value={department.id}>{department.name} ({department.shortform})</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Step 3 - Class */}
+            <div>
+              <label className="block text-sm font-bold text-brand-950 mb-1.5">
+                <span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white font-bold">3</span>
                 Class
               </label>
               <select
                 value={selectedClassId}
                 onChange={e => saveClass(e.target.value)}
-                disabled={!selectedSemesterId}
+                disabled={!selectedDepartmentId}
                 className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-brand-600 disabled:opacity-40"
               >
                 <option value="">— Select Class —</option>
@@ -1100,7 +1184,7 @@ export function Timetable() {
       ) : (
         <div className="flex flex-col items-center bg-white border border-slate-200 rounded-xl p-8">
           {/* Drag & Drop Tip Banner */}
-          <div className="no-print mb-6 w-full max-w-4xl rounded-xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-xs font-medium text-indigo-900 flex items-center gap-3 shadow-sm">
+          <div className="no-print mb-6 w-full max-w-4xl rounded-xl border border-indigo-100 bg-indigo-50/80 px-4 py-3 text-xs font-medium text-indigo-900 flex flex-col items-start gap-3 shadow-sm sm:flex-row sm:items-center">
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white font-bold text-sm">⋮⋮</span>
             <div>
               <p className="font-bold text-indigo-950 text-sm">Interactive Drag & Drop Row Replacement</p>
@@ -1108,7 +1192,8 @@ export function Timetable() {
             </div>
           </div>
 
-          <div ref={printRef} id="print-timetable" className="w-full max-w-4xl bg-white" style={{fontFamily: "'Times New Roman', Times, serif"}}>
+          <div className="w-full overflow-x-auto">
+          <div ref={printRef} id="print-timetable" className="min-w-[640px] max-w-4xl bg-white" style={{fontFamily: "'Times New Roman', Times, serif"}}>
             
             {/* Title exact match */}
             <h2 className="text-center text-[22px] font-bold mb-6 text-black">
@@ -1200,6 +1285,7 @@ export function Timetable() {
               Total Periods: {totalPeriods}
             </div>
 
+          </div>
           </div>
         </div>
       )}

@@ -14,8 +14,8 @@ create table if not exists public.subjects (
   name text not null,
   code text not null,
   total_hours integer not null check (total_hours >= 0),
-  theory_hours integer not null default 0 check (theory_hours >= 0),
-  lab_hours integer not null default 0 check (lab_hours >= 0),
+  theory_hours integer not null default 0 check (theory_hours >= 0 and theory_hours <= 8),
+  lab_hours integer not null default 0 check (lab_hours >= 0 and lab_hours <= 3),
   lecturer_id uuid references public.lecturers(id) on delete set null,
   constraint subjects_hours_match check (total_hours = theory_hours + lab_hours),
   constraint subjects_code_per_semester unique (semester_id, code)
@@ -71,6 +71,34 @@ create table if not exists public.departments (
   created_at timestamptz default now(),
   unique (shortform, intake_year)
 );
+
+-- Added before the legacy-data backfill below. The foreign-key constraint is
+-- installed after the backfill so this migration also works on existing data.
+alter table public.classes add column if not exists department_id uuid;
+
+-- Backfill the new relationship for legacy classes whose names use the
+-- department shortform prefix (for example CA261).
+update public.classes c
+set department_id = d.id
+from public.departments d
+where c.department_id is null
+  and c.intake_year = d.intake_year
+  and upper(c.name) like upper(d.shortform) || '%';
+
+-- A class belongs to one concrete department record (one department in one
+-- academic year). RESTRICT is intentional: a department can never be removed
+-- while classes (and their timetable records) still reference it.
+alter table public.classes drop constraint if exists classes_department_id_fkey;
+alter table public.classes
+  add constraint classes_department_id_fkey
+  foreign key (department_id) references public.departments(id) on delete restrict;
+create index if not exists classes_department_id_idx on public.classes(department_id);
+
+-- Enforce the same subject hour limits for existing deployments.
+alter table public.subjects drop constraint if exists subjects_theory_hours_limit;
+alter table public.subjects add constraint subjects_theory_hours_limit check (theory_hours <= 8);
+alter table public.subjects drop constraint if exists subjects_lab_hours_limit;
+alter table public.subjects add constraint subjects_lab_hours_limit check (lab_hours <= 3);
 
 -- Global department catalogue. Departments are managed on the Semesters page,
 -- then selected for each academic year on the Classes page.
@@ -180,8 +208,7 @@ begin
   end if;
   if exists (
     select 1 from public.departments d
-    join public.classes c on c.intake_year = d.intake_year
-      and upper(c.name) like upper(old.shortform) || '%'
+    join public.classes c on c.department_id = d.id
     where d.shortform = old.shortform
   ) then
     raise exception 'Cannot delete this department because it is used by classes.';

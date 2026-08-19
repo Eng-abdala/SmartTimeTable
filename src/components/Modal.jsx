@@ -75,6 +75,14 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
     if (type === 'subject') { 
       const theory = Number(form.theory_hours) || 0
       const lab = Number(form.lab_hours) || 0
+      if (theory < 0 || theory > 8) {
+        setFormError('Theory hours must be between 0 and 8.')
+        return
+      }
+      if (lab < 0 || lab > 3) {
+        setFormError('Lab hours must be between 0 and 3.')
+        return
+      }
       return onSave('subjects', { 
         semester_id: semester.id, 
         code: form.code,
@@ -99,11 +107,12 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
     const table = type === 'semester' ? 'semesters' : type === 'class' ? 'classes' : `${type}s`
     
     // Omit fields not in the Supabase schema
-    const { taught_subjects, roomNumber, department_id, ...dbPayload } = form
+    const { taught_subjects, roomNumber, ...dbPayload } = form
     // semester_id is valid for classes — keep it in dbPayload
 
     if (type === 'class') {
       dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
+      if (!dbPayload.department_id && deptContext) dbPayload.department_id = deptContext.id
       // Enforce: if the academic year has an assigned semester, always save that
       if (yearInheritedSemesterId) {
         dbPayload.semester_id = yearInheritedSemesterId
@@ -210,9 +219,9 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
             <>
               <Field label="Subject Code" value={form.code} onChange={(v) => change('code', v)} placeholder="CS302" />
               <Field label="Subject Name" value={form.name} onChange={(v) => change('name', v)} placeholder="C# Programming II" />
-              <div className="grid grid-cols-2 gap-4">
-                <Field label="Theory Hours" type="number" min="0" value={form.theory_hours} onChange={(v) => change('theory_hours', v)} />
-                <Field label="Lab Hours (Optional)" type="number" min="0" required={false} value={form.lab_hours} onChange={(v) => change('lab_hours', v)} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Theory Hours (max 8)" type="number" min="0" max="8" value={form.theory_hours} onChange={(v) => change('theory_hours', v)} />
+                <Field label="Lab Hours (max 3)" type="number" min="0" max="3" required={false} value={form.lab_hours} onChange={(v) => change('lab_hours', v)} />
               </div>
             </>
           )}
@@ -268,7 +277,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
               ) : (
                 <Field label="Class Name" value={form.name} onChange={(v) => change('name', v)} placeholder="CA235" />
               )}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block text-sm font-semibold text-brand-950">
                   Shift
                   <select value={form.shift || 'Morning'} onChange={(e) => change('shift', e.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal text-slate-700 outline-none focus:border-brand-600">

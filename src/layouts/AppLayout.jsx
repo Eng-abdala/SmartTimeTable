@@ -238,7 +238,7 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto hidden border-t border-white/10 px-6 py-5 text-xs text-cyan-100/55 lg:block">© 2026 IT Faculty</div>
+        <div className="mt-auto hidden border-t border-white/10 px-6 py-5 text-xs text-cyan-100/55 lg:block">© JUST 2026</div>
       </aside>
 
       <main className="min-w-0 flex-1 p-5 sm:p-8 lg:ml-64">

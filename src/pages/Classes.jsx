@@ -42,10 +42,12 @@ export function Classes() {
   }
 
   const removeAcademicYear = async (year) => {
-    if (!window.confirm(`Delete Class of ${year} and all its departments?`)) return
-    
-    // Departments cascade delete is not enforced yet, so we delete manually
-    await supabase.from('departments').delete().eq('intake_year', year)
+    const classCount = classes.filter(c => c.intake_year === year).length
+    if (classCount > 0) {
+      setNotice(`Cannot delete Class of ${year}: delete its ${classCount} class${classCount === 1 ? '' : 'es'} first.`, 'error')
+      return
+    }
+    if (!window.confirm(`Delete the empty Class of ${year}?`)) return
     const { error } = await supabase.from('academic_years').delete().eq('year', year)
     
     if (error) {
@@ -187,9 +189,14 @@ export function Classes() {
   const removeDepartment = async (deptId) => {
     const dept = departments.find(d => d.id === deptId)
     if (!dept) return
-    if (!window.confirm(`Delete ${dept.name} department and all its classes?`)) return
-    
-    // Classes are handled separately or cascade depending on schema, but safe to just delete dept
+    const classCount = classes.filter(c => c.department_id === deptId || (
+      !c.department_id && c.intake_year === dept.intake_year && c.name.toUpperCase().startsWith(dept.shortform.toUpperCase())
+    )).length
+    if (classCount > 0) {
+      setNotice(`Cannot delete ${dept.name}: delete its ${classCount} class${classCount === 1 ? '' : 'es'} first.`, 'error')
+      return
+    }
+    if (!window.confirm(`Delete the empty ${dept.name} department?`)) return
     const { error } = await supabase.from('departments').delete().eq('id', deptId)
     if (error) {
       setNotice(error.message, 'error')
@@ -216,16 +223,16 @@ export function Classes() {
     if (!currentDept) return []
     return classes
       .filter(c =>
-        c.intake_year === currentDept.intake_year &&
-        c.name.toUpperCase().startsWith(currentDept.shortform.toUpperCase())
+        c.department_id === currentDept.id ||
+        (!c.department_id && c.intake_year === currentDept.intake_year && c.name.toUpperCase().startsWith(currentDept.shortform.toUpperCase()))
       )
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [classes, currentDept])
 
   const getClassCount = (dept) =>
     classes.filter(c =>
-      c.intake_year === dept.intake_year &&
-      c.name.toUpperCase().startsWith(dept.shortform.toUpperCase())
+      c.department_id === dept.id ||
+      (!c.department_id && c.intake_year === dept.intake_year && c.name.toUpperCase().startsWith(dept.shortform.toUpperCase()))
     ).length
 
   const getDeptCount = (year) => departments.filter(d => d.intake_year === year).length
@@ -297,9 +304,7 @@ export function Classes() {
     )
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
   // Level 2 — Departments (Year selected)
-  // ═══════════════════════════════════════════════════════════════════════════
   if (selectedYear && !selectedDept) {
     return (
       <section>
@@ -546,11 +551,11 @@ export function Classes() {
       {!academicYears.length ? (
         <Empty title="No academic years yet" text='Click "Add Academic Year" to get started.' />
       ) : (
-        <section className="grid gap-40  md:grid-cols-2 xl:grid-cols-4">
+        <section className="grid gap-8 sm:grid-cols-2 xl:grid-cols-4">
           {academicYears.map((year) => (
             <div
               key={year}
-              className="group rounded-2xl w-65  border border-slate-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
+              className="group rounded-2xl border border-slate-100 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
             >
               <div className="flex items-start justify-between">
                 <span className="rounded-lg bg-cyan-50 px-3 py-1 text-xs font-bold text-brand-600">{year}</span>

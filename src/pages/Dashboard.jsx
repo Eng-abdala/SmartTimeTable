@@ -7,7 +7,7 @@ export function Dashboard() {
   return (
     <>
       <header className="mb-8">
-        <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
+        <p className="text-sm font-medium text-brand-600">Computer And IT</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Faculty Dashboard</h1>
       </header>
 
