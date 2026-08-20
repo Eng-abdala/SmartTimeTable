@@ -11,6 +11,8 @@ const DEPT_COLORS = [
   { bg: 'bg-amber-600', light: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' },
   { bg: 'bg-rose-600', light: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-700' },
 ]
+const DEPARTMENT_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9 ]*$/
+const DEPARTMENT_SHORTFORM_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/
 
 function sortByNumber(list) {
   return [...list].sort((a, b) => {
@@ -92,6 +94,12 @@ export function Semesters() {
     const name = departmentForm.name.trim()
     const shortform = departmentForm.shortform.trim().toUpperCase()
     if (!name || !shortform) return setDepartmentError('Name and shortform are required.')
+    if (!DEPARTMENT_NAME_PATTERN.test(name)) {
+      return setDepartmentError('Department name must start with a letter and can contain only letters, numbers, and spaces.')
+    }
+    if (!DEPARTMENT_SHORTFORM_PATTERN.test(shortform)) {
+      return setDepartmentError('Shortform must start with a letter and can contain only letters and numbers.')
+    }
 
     const isShortformInUse = editingDepartment && editingDepartment.shortform !== shortform && (
       semesters.some(s => s.department === editingDepartment.shortform) ||
@@ -229,8 +237,8 @@ export function Semesters() {
         <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
           <form onSubmit={saveDepartment} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
             <div className="mb-6 flex items-center justify-between"><h2 className="text-xl font-bold text-brand-950">{editingDepartment ? 'Edit' : 'Add'} Department</h2><button type="button" onClick={() => setShowDepartmentForm(false)} className="text-2xl text-slate-400">×</button></div>
-            <label className="block text-sm font-semibold text-brand-950">Department Name<input required value={departmentForm.name} onChange={e => setDepartmentForm({ ...departmentForm, name: e.target.value })} placeholder="e.g. Artificial Intelligence" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /></label>
-            <label className="mt-4 block text-sm font-semibold text-brand-950">Shortform<input required maxLength={10} value={departmentForm.shortform} onChange={e => setDepartmentForm({ ...departmentForm, shortform: e.target.value.toUpperCase() })} placeholder="e.g. AI" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /></label>
+            <label className="block text-sm font-semibold text-brand-950">Department Name<input required value={departmentForm.name} onChange={e => setDepartmentForm({ ...departmentForm, name: e.target.value })} placeholder="e.g. Artificial Intelligence" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /><span className="mt-1 block text-xs font-normal text-slate-400">Start with a letter; letters, numbers, and spaces only.</span></label>
+            <label className="mt-4 block text-sm font-semibold text-brand-950">Shortform<input required maxLength={10} value={departmentForm.shortform} onChange={e => setDepartmentForm({ ...departmentForm, shortform: e.target.value.toUpperCase() })} placeholder="e.g. AI" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /><span className="mt-1 block text-xs font-normal text-slate-400">Start with a letter; letters and numbers only.</span></label>
             {departmentError && <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">{departmentError}</div>}
             <button className="mt-5 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800">{editingDepartment ? 'Save Changes' : 'Create Department'}</button>
           </form>

@@ -3,6 +3,15 @@ import { Field } from './Field'
 import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
+const SEMESTER_NAME_PATTERN = /^semester\s*(\d+)$/i
+
+function semesterNameForInput(semester) {
+  if (!semester?.department) return semester?.name
+  const departmentSuffix = ` (${semester.department})`
+  return semester.name?.endsWith(departmentSuffix)
+    ? semester.name.slice(0, -departmentSuffix.length)
+    : semester.name
+}
 
 export function Modal({ modal, semester, semesters = [], subjects = [], lecturers = [], classes = [], departments = [], getLecturerTaughtSubjects, saveLecturerTaughtSubjects, onClose, onSave }) {
   const type = typeof modal === 'string' ? modal : modal.type
@@ -26,7 +35,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
 
   const [form, setForm] = useState(
     typeof modal === 'object' && modal.data ? { 
-      ...modal.data, 
+      ...modal.data,
+      name: type === 'semester' ? semesterNameForInput(modal.data) : modal.data.name,
       taught_subjects: initialTaught,
       roomNumber: classPrefix && modal.data.name?.startsWith(classPrefix) ? modal.data.name.slice(classPrefix.length) : modal.data.name
     } : 
@@ -122,8 +132,14 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
     // (Code generation moved below so it can pick up the appended department for semesters)
 
     if (type === 'semester') {
-      const match = dbPayload.name?.match(/\d+/)
-      const isHigh = match && parseInt(match[0], 10) >= 4
+      const match = dbPayload.name?.trim().match(SEMESTER_NAME_PATTERN)
+      if (!match) {
+        setFormError('Semester name must be "Semester" followed by a number, for example "Semester 4".')
+        return
+      }
+
+      dbPayload.name = `Semester ${match[1]}`
+      const isHigh = parseInt(match[1], 10) >= 4
       if (!isHigh) {
         delete dbPayload.department
       } else if (!dbPayload.department) {
