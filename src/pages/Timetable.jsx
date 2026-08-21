@@ -527,6 +527,10 @@ export function Timetable() {
 
   const handleGenerate = async () => {
     if (!selectedClass || !selectedSemester || !semesterSubjects.length) return
+    if (alreadyHasTimetable) {
+      setNotice(`${selectedClass.name} already has a saved timetable. Delete it first if you need to create a replacement.`, 'error')
+      return
+    }
 
     // Ensure all subjects have at least one lecturer assigned
     const unassignedSubjects = semesterSubjects.filter(sub => {
@@ -1027,7 +1031,7 @@ export function Timetable() {
               <button 
                 onClick={handleGenerate} 
                 className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-semibold text-indigo-700 shadow-sm transition hover:bg-indigo-100 hover:border-indigo-300"
-                title="Regenerate a new layout"
+                title="Generate a new layout"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1158,7 +1162,7 @@ export function Timetable() {
                 <span className="text-lg">ℹ️</span>
                 <div>
                   <b>{selectedClass?.name}</b> already has a saved timetable for <b>{selectedSemester?.name}</b>.
-                  <p className="mt-1 text-xs text-blue-700">You can click below to generate a new layout or click &quot;Master Schedule Grid&quot; to see all timetables together.</p>
+                  <p className="mt-1 text-xs text-blue-700">Generation is locked for this class to prevent duplicate timetables. You can view it in the Master Schedule Grid.</p>
                 </div>
               </div>
             )}
@@ -1173,11 +1177,11 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />
-              {alreadyHasTimetable ? 'Generate / Shuffle New Timetable' : 'Generate Timetable'}
+              {alreadyHasTimetable ? 'Timetable Already Generated' : 'Generate Timetable'}
             </button>
           </div>
         </div>
