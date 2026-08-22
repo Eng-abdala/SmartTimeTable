@@ -124,6 +124,10 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
     // semester_id is valid for classes — keep it in dbPayload
 
     if (type === 'class') {
+      if (classPrefix && !/^\d+$/.test((roomNumber || '').trim())) {
+        setFormError('Class number must contain digits only, for example 1, 2, or 3.')
+        return
+      }
       dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
       if (!dbPayload.department_id && deptContext) dbPayload.department_id = deptContext.id
       // Enforce: if the academic year has an assigned semester, always save that
@@ -303,6 +307,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
                       value={form.roomNumber || ''} 
                       onChange={(e) => change('roomNumber', e.target.value)} 
                       placeholder="1" 
+                      inputMode="numeric"
+                      pattern="[0-9]+"
                       className="w-full px-3 py-2.5 font-normal text-slate-700 outline-none"
                       autoFocus
                     />
