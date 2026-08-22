@@ -1,4 +1,4 @@
-export function Field({ label, value, onChange, placeholder, type = 'text', min, required = true }) { 
+export function Field({ label, value, onChange, placeholder, type = 'text', min, max, minLength, maxLength, pattern, required = true }) { 
   return (
     <label className="block text-sm font-semibold text-brand-950">
       {label}
@@ -6,6 +6,10 @@ export function Field({ label, value, onChange, placeholder, type = 'text', min,
         required={required}
         type={type} 
         min={min} 
+        max={max}
+        minLength={minLength}
+        maxLength={maxLength}
+        pattern={pattern}
         value={value} 
         onChange={(e) => onChange(e.target.value)} 
         placeholder={placeholder} 

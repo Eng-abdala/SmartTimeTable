@@ -6,6 +6,8 @@ import { Icon } from '../components/Icon'
 import { ManagerTable } from '../components/ManagerTable'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
+const LECTURER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,7}$/
+const LECTURER_NAME_PATTERN = /^[A-Za-z ]+$/
 
 // ─── Excel column definitions ────────────────────────────────────────────────
 const COLUMNS = [
@@ -16,7 +18,7 @@ const COLUMNS = [
 
 function buildTemplateRow() {
   return {
-    'Lecturer ID': 'LEC-001',
+    'Lecturer ID': 'LEC001',
     'Full Name': 'Yahye Ali Isse',
     'Available Days (comma-separated or "All Week")': 'All Week',
   }
@@ -60,7 +62,9 @@ function parseRow(raw) {
 
   const errors = []
   if (!lecturer_id) errors.push('Missing Lecturer ID')
-  if (!name)        errors.push('Missing Full Name')
+  else if (!LECTURER_ID_PATTERN.test(lecturer_id)) errors.push('Lecturer ID must start with a letter, use letters and numbers only, and be 3–8 characters long')
+  if (!name) errors.push('Missing Full Name')
+  else if (name.length < 3 || !LECTURER_NAME_PATTERN.test(name) || !/[A-Za-z]/.test(name)) errors.push('Full Name must use letters and spaces only and be at least 3 characters long')
 
   let is_all_week = false
   let available_days = []

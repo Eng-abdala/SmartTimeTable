@@ -21,7 +21,7 @@ export function ManagerTable({ headers, rows, render, empty }) {
     <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
       {rows.length ? (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[650px] text-left text-sm">
+          <table className="w-full min-w-[650px] text-left text-sm [&_th:last-child]:sticky [&_th:last-child]:right-0 [&_th:last-child]:z-10 [&_th:last-child]:bg-slate-50 [&_td:last-child]:sticky [&_td:last-child]:right-0 [&_td:last-child]:z-10 [&_td:last-child]:bg-white">
             <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 {headers.map((header) => (

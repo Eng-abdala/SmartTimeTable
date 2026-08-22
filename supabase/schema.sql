@@ -46,6 +46,14 @@ create table if not exists public.lecturers (
   constraint lecturers_available_days check (is_all_week = true or cardinality(available_days) > 0)
 );
 
+-- Lecturer registration validation (also enforced by the client and Excel import).
+alter table public.lecturers drop constraint if exists lecturers_id_format;
+alter table public.lecturers add constraint lecturers_id_format
+  check (lecturer_id ~ '^[A-Za-z][A-Za-z0-9]{2,7}$') not valid;
+alter table public.lecturers drop constraint if exists lecturers_name_format;
+alter table public.lecturers add constraint lecturers_name_format
+  check (length(trim(name)) >= 3 and name ~ '^[A-Za-z ]+$' and name ~ '[A-Za-z]') not valid;
+
 create table if not exists public.classes (
   id uuid primary key default gen_random_uuid(),
   name text not null,
@@ -71,6 +79,25 @@ create table if not exists public.departments (
   created_at timestamptz default now(),
   unique (shortform, intake_year)
 );
+
+-- An academic year must be emptied of departments before it can be removed.
+create or replace function public.prevent_academic_year_delete()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (select 1 from public.departments where intake_year = old.year) then
+    raise exception 'Cannot delete this academic year because it still has departments.';
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists protect_academic_year_delete on public.academic_years;
+create trigger protect_academic_year_delete
+before delete on public.academic_years
+for each row execute function public.prevent_academic_year_delete();
 
 -- Added before the legacy-data backfill below. The foreign-key constraint is
 -- installed after the backfill so this migration also works on existing data.
@@ -203,6 +230,9 @@ language plpgsql
 set search_path = public
 as $$
 begin
+  if exists (select 1 from public.departments where shortform = old.shortform) then
+    raise exception 'Cannot delete this department because it is registered in an academic year.';
+  end if;
   if exists (select 1 from public.semesters where department = old.shortform) then
     raise exception 'Cannot delete this department because it has semesters.';
   end if;
@@ -213,7 +243,6 @@ begin
   ) then
     raise exception 'Cannot delete this department because it is used by classes.';
   end if;
-  delete from public.departments where shortform = old.shortform;
   return old;
 end;
 $$;

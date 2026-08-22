@@ -47,6 +47,11 @@ export function Classes() {
       setNotice(`Cannot delete Class of ${year}: delete its ${classCount} class${classCount === 1 ? '' : 'es'} first.`, 'error')
       return
     }
+    const departmentCount = departments.filter(d => d.intake_year === year).length
+    if (departmentCount > 0) {
+      setNotice(`Cannot delete Class of ${year}: delete its ${departmentCount} department${departmentCount === 1 ? '' : 's'} first.`, 'error')
+      return
+    }
     if (!window.confirm(`Delete the empty Class of ${year}?`)) return
     const { error } = await supabase.from('academic_years').delete().eq('year', year)
     
@@ -202,7 +207,6 @@ export function Classes() {
       setNotice(error.message, 'error')
       return
     }
-    
     await loadData()
   }
 
@@ -378,7 +382,7 @@ export function Classes() {
                   <div className="flex items-center gap-1">
                     <button
                       onClick={(e) => { e.stopPropagation(); removeDepartment(dept.id) }}
-                      className="rounded-lg p-1.5 text-slate-400 opacity-0 transition hover:bg-rose-50 hover:text-rose-500 group-hover:opacity-100"
+                      className="rounded-lg p-1.5 text-slate-400 opacity-100 transition hover:bg-rose-50 hover:text-rose-500 sm:opacity-0 sm:group-hover:opacity-100"
                       title="Delete Department"
                     >
                       <Icon name="trash" className="h-3.5 w-3.5" />

@@ -28,8 +28,11 @@ export function AppLayout() {
   }, [notice])
 
   const [modal, setModal] = useState(null)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
+
+  useEffect(() => { setMobileNavOpen(false) }, [location.pathname])
 
   const loadData = async () => {
     setLoading(true)
@@ -217,7 +220,27 @@ export function AppLayout() {
 
   return (
     <div className="min-h-screen bg-[#f5f8fa] font-sans text-[#16333a] lg:flex">
-      <aside className="flex w-full flex-col bg-brand-950 text-white lg:fixed lg:inset-y-0 lg:w-64">
+      <div className="fixed inset-x-0 top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm lg:hidden">
+        <div className="flex items-center gap-2.5">
+          <div className="grid h-9 w-9 place-items-center overflow-hidden rounded-full bg-white p-0.5 shadow">
+            <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
+          </div>
+          <div>
+            <p className="text-sm font-bold leading-tight text-brand-950">Smart Timetable</p>
+            <p className="text-[10px] text-slate-500">IT Faculty Portal</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setMobileNavOpen(true)}
+          className="grid h-10 w-10 place-items-center rounded-xl text-2xl font-medium leading-none text-brand-700 transition hover:bg-brand-50"
+          aria-label="Open navigation menu"
+        >
+          <Icon name="menu" className="h-5 w-5" />
+        </button>
+      </div>
+      {mobileNavOpen && <button type="button" aria-label="Close navigation menu" onClick={() => setMobileNavOpen(false)} className="fixed inset-0 z-30 bg-slate-950/35 lg:hidden" />}
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-brand-950 text-white shadow-2xl transition-transform duration-200 lg:translate-x-0 lg:shadow-none ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex items-center gap-3 px-6 py-7">
           <div className="grid h-11 w-11 place-items-center overflow-hidden rounded-full bg-white p-0.5 shadow-lg">
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
@@ -226,13 +249,14 @@ export function AppLayout() {
             <p className="text-lg font-bold tracking-tight">Smart Timetable</p>
             <p className="text-xs text-cyan-100/70">IT Faculty Portal</p>
           </div>
+          <button type="button" onClick={() => setMobileNavOpen(false)} className="ml-auto rounded-lg p-2 text-cyan-50/80 hover:bg-white/10 lg:hidden" aria-label="Close navigation menu">‹</button>
         </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 pb-5 lg:block lg:space-y-1">
+        <nav className="space-y-1 px-3 pb-5">
           {nav.map(([label, icon, path]) => (
             <NavLink
               key={label}
               to={path}
-              className={({ isActive }) => `flex min-w-max items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition lg:w-full ${isActive ? 'bg-brand-600 text-white shadow-lg shadow-black/10' : 'text-cyan-50/70 hover:bg-white/10 hover:text-white'}`}
+              className={({ isActive }) => `flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${isActive ? 'bg-brand-600 text-white shadow-lg shadow-black/10' : 'text-cyan-50/70 hover:bg-white/10 hover:text-white'}`}
             >
               <Icon name={icon} />{label}
             </NavLink>
@@ -241,7 +265,7 @@ export function AppLayout() {
         <div className="mt-auto hidden border-t border-white/10 px-6 py-5 text-xs text-cyan-100/55 lg:block">© JUST 2026</div>
       </aside>
 
-      <main className="min-w-0 flex-1 p-5 sm:p-8 lg:ml-64">
+      <main className="min-w-0 flex-1 p-5 pt-20 sm:p-8 sm:pt-24 lg:ml-64 lg:p-8">
         {location.pathname !== '/' && (
           <button
             onClick={() => navigate(-1)}

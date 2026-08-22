@@ -31,7 +31,7 @@ function SemesterCard({ semester, subjects, navigate, setModal, remove }) {
     >
       <div className="flex items-start justify-between">
         <span className="text-brand-500 transition group-hover:translate-x-1 block"><Icon name="arrow" /></span>
-        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition">
+        <div className="flex gap-1 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
           <button
             onClick={(e) => { e.stopPropagation(); setModal({ type: 'semester', data: semester }) }}
             className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-brand-600"
@@ -125,7 +125,12 @@ export function Semesters() {
   }
 
   const deleteDepartment = async (department) => {
-    if (!window.confirm(`Delete ${department.name}? This works only when it has no semesters and no classes.`)) return
+    const usedInAcademicYears = departments.filter(item => item.shortform === department.shortform)
+    if (usedInAcademicYears.length) {
+      setNotice(`Cannot delete ${department.name}: it is registered in ${usedInAcademicYears.length} academic year${usedInAcademicYears.length === 1 ? '' : 's'}.`, 'error')
+      return
+    }
+    if (!window.confirm(`Delete ${department.name}? This works only when it is not used in an academic year and has no semesters.`)) return
     const { error } = await supabase.from('department_catalog').delete().eq('id', department.id)
     if (error) return setNotice(error.message, 'error')
     await loadData()
@@ -237,7 +242,7 @@ export function Semesters() {
         <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
           <form onSubmit={saveDepartment} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
             <div className="mb-6 flex items-center justify-between"><h2 className="text-xl font-bold text-brand-950">{editingDepartment ? 'Edit' : 'Add'} Department</h2><button type="button" onClick={() => setShowDepartmentForm(false)} className="text-2xl text-slate-400">×</button></div>
-            <label className="block text-sm font-semibold text-brand-950">Department Name<input required value={departmentForm.name} onChange={e => setDepartmentForm({ ...departmentForm, name: e.target.value })} placeholder="e.g. Artificial Intelligence" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /><span className="mt-1 block text-xs font-normal text-slate-400">Start with a letter; letters, numbers, and spaces only.</span></label>
+            <label className="block text-sm font-semibold text-brand-950">Department Name<input required value={departmentForm.name} onChange={e => setDepartmentForm({ ...departmentForm, name: e.target.value })} placeholder="e.g. Computer Application" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /><span className="mt-1 block text-xs font-normal text-slate-400">Start with a letter; letters, numbers, and spaces only.</span></label>
             <label className="mt-4 block text-sm font-semibold text-brand-950">Shortform<input required maxLength={10} value={departmentForm.shortform} onChange={e => setDepartmentForm({ ...departmentForm, shortform: e.target.value.toUpperCase() })} placeholder="e.g. AI" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-normal outline-none focus:border-brand-600" /><span className="mt-1 block text-xs font-normal text-slate-400">Start with a letter; letters and numbers only.</span></label>
             {departmentError && <div className="mt-4 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">{departmentError}</div>}
             <button className="mt-5 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800">{editingDepartment ? 'Save Changes' : 'Create Department'}</button>

@@ -4,6 +4,8 @@ import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 const SEMESTER_NAME_PATTERN = /^semester\s*(\d+)$/i
+const LECTURER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,7}$/
+const LECTURER_NAME_PATTERN = /^[A-Za-z ]+$/
 
 function semesterNameForInput(semester) {
   if (!semester?.department) return semester?.name
@@ -32,6 +34,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
   }, [yearSemesterMap])
   // The semester inherited from the academic year context
   const yearInheritedSemesterId = intakeYearContext ? (yearSemesterMap[intakeYearContext] || null) : null
+  const classSemesterId = yearInheritedSemesterId
 
   const [form, setForm] = useState(
     typeof modal === 'object' && modal.data ? { 
@@ -47,7 +50,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       shift: 'Morning', 
       intake_year: intakeYearContext || new Date().getFullYear(),
       // Auto-inherit semester from the academic year
-      semester_id: yearInheritedSemesterId || null,
+      semester_id: classSemesterId,
       department_id: deptContext ? deptContext.id : null
     } : 
     { name: '', department: prefillDepartment || '' }
@@ -124,9 +127,24 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       dbPayload.name = classPrefix ? `${classPrefix}${roomNumber || ''}` : form.name;
       if (!dbPayload.department_id && deptContext) dbPayload.department_id = deptContext.id
       // Enforce: if the academic year has an assigned semester, always save that
-      if (yearInheritedSemesterId) {
-        dbPayload.semester_id = yearInheritedSemesterId
+      if (classSemesterId) {
+        dbPayload.semester_id = classSemesterId
       }
+    }
+
+    if (type === 'lecturer') {
+      const lecturerIdValue = form.lecturer_id.trim()
+      const lecturerName = form.name.trim()
+      if (!LECTURER_ID_PATTERN.test(lecturerIdValue)) {
+        setFormError('Lecturer ID must start with a letter, contain only letters and numbers, and be 3–8 characters long.')
+        return
+      }
+      if (lecturerName.length < 3 || !LECTURER_NAME_PATTERN.test(lecturerName) || !/[A-Za-z]/.test(lecturerName)) {
+        setFormError('Full name must contain only letters and spaces, cannot be only spaces, and must be at least 3 characters long.')
+        return
+      }
+      dbPayload.lecturer_id = lecturerIdValue
+      dbPayload.name = lecturerName
     }
 
     // (Code generation moved below so it can pick up the appended department for semesters)
@@ -244,8 +262,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
           
           {type === 'lecturer' && (
             <>
-              <Field label="Lecturer ID" value={form.lecturer_id} onChange={(v) => change('lecturer_id', v)} placeholder="LEC-101" />
-              <Field label="Full Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Yahye Ali Isse" />
+              <Field label="Lecturer ID" value={form.lecturer_id} onChange={(v) => change('lecturer_id', v)} placeholder="LEC101" minLength={3} maxLength={8} pattern="[A-Za-z][A-Za-z0-9]{2,7}" />
+              <Field label="Full Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Yahye Ali Isse" minLength={3} pattern="[A-Za-z ]+" />
               
 
               <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 p-4 bg-white">
@@ -318,13 +336,13 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
               </div>
               <label className="block text-sm font-semibold text-brand-950">
                 Current Semester
-                {yearInheritedSemesterId ? (
+                {classSemesterId ? (
                   // Locked — show read-only badge
                   <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-2.5">
                     <span className="text-base">🔒</span>
                     <div className="min-w-0">
                       <p className="font-semibold text-brand-700 text-sm">
-                        {semesters.find(s => s.id === yearInheritedSemesterId)?.name || 'Unknown'}
+                        {semesters.find(s => s.id === classSemesterId)?.name || 'Unknown'}
                       </p>
                       <p className="text-[11px] text-slate-500 mt-0.5">
                         Inherited from Class of {intakeYearContext} — cannot be changed individually

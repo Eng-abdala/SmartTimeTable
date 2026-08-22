@@ -7,6 +7,7 @@ export function Icon({ name, className = 'h-5 w-5' }) {
     plus: <path d="M12 5v14M5 12h14" />,
     arrow: <path d="m9 18 6-6-6-6" />,
     back: <path d="m15 18-6-6 6-6" />,
+    menu: <><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></>,
     edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></>,
     trash: <><path d="M3 6h18" /><path d="M8 6V4h8v2M19 6l-1 14H6L5 6" /><path d="M10 11v5M14 11v5" /></>,
     calendar: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18" /></>,
