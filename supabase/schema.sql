@@ -42,9 +42,21 @@ create table if not exists public.lecturers (
   name text not null,
   is_all_week boolean not null default true,
   available_days text[] not null default '{}',
+  morning_available_hours integer not null default 20 check (morning_available_hours between 0 and 20),
+  afternoon_available_hours integer not null default 20 check (afternoon_available_hours between 0 and 20),
   taught_subjects text[] not null default '{}',
   constraint lecturers_available_days check (is_all_week = true or cardinality(available_days) > 0)
 );
+
+-- Availability-hour migration for existing deployments.
+alter table public.lecturers add column if not exists morning_available_hours integer not null default 20;
+alter table public.lecturers add column if not exists afternoon_available_hours integer not null default 20;
+alter table public.lecturers alter column morning_available_hours set default 20;
+alter table public.lecturers alter column afternoon_available_hours set default 20;
+alter table public.lecturers drop constraint if exists lecturers_morning_available_hours_range;
+alter table public.lecturers add constraint lecturers_morning_available_hours_range check (morning_available_hours between 0 and 20);
+alter table public.lecturers drop constraint if exists lecturers_afternoon_available_hours_range;
+alter table public.lecturers add constraint lecturers_afternoon_available_hours_range check (afternoon_available_hours between 0 and 20);
 
 -- Lecturer registration validation (also enforced by the client and Excel import).
 alter table public.lecturers drop constraint if exists lecturers_id_format;

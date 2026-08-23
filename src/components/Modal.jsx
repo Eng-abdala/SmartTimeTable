@@ -43,7 +43,10 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       taught_subjects: initialTaught,
       roomNumber: classPrefix && modal.data.name?.startsWith(classPrefix) ? modal.data.name.slice(classPrefix.length) : modal.data.name
     } : 
-    type === 'lecturer' ? { lecturer_id: '', name: '', is_all_week: true, available_days: [], taught_subjects: [] } : 
+    type === 'lecturer' ? {
+      lecturer_id: '', name: '', is_all_week: true, available_days: [], taught_subjects: [],
+      morning_available_hours: 20, afternoon_available_hours: 20,
+    } : 
     type === 'class' ? { 
       name: '', 
       roomNumber: '',
@@ -139,6 +142,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
     if (type === 'lecturer') {
       const lecturerIdValue = form.lecturer_id.trim()
       const lecturerName = form.name.trim()
+      const morningHours = Number(form.morning_available_hours)
+      const afternoonHours = Number(form.afternoon_available_hours)
       if (!LECTURER_ID_PATTERN.test(lecturerIdValue)) {
         setFormError('Lecturer ID must start with a letter, contain only letters and numbers, and be 3–8 characters long.')
         return
@@ -147,8 +152,14 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
         setFormError('Full name must contain only letters and spaces, cannot be only spaces, and must be at least 3 characters long.')
         return
       }
+      if (!Number.isInteger(morningHours) || morningHours < 0 || morningHours > 20 || !Number.isInteger(afternoonHours) || afternoonHours < 0 || afternoonHours > 20) {
+        setFormError('Morning and afternoon availability must each be a whole number from 0 to 20 hours per week.')
+        return
+      }
       dbPayload.lecturer_id = lecturerIdValue
       dbPayload.name = lecturerName
+      dbPayload.morning_available_hours = morningHours
+      dbPayload.afternoon_available_hours = afternoonHours
     }
 
     // (Code generation moved below so it can pick up the appended department for semesters)
@@ -268,6 +279,10 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
             <>
               <Field label="Lecturer ID" value={form.lecturer_id} onChange={(v) => change('lecturer_id', v)} placeholder="LEC101" minLength={3} maxLength={8} pattern="[A-Za-z][A-Za-z0-9]{2,7}" />
               <Field label="Full Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Yahye Ali Isse" minLength={3} pattern="[A-Za-z ]+" />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Morning available hours (per week)" type="number" min="0" max="20" value={form.morning_available_hours ?? 20} onChange={(v) => change('morning_available_hours', v)} placeholder="12" />
+                <Field label="Afternoon available hours (per week)" type="number" min="0" max="20" value={form.afternoon_available_hours ?? 20} onChange={(v) => change('afternoon_available_hours', v)} placeholder="3" />
+              </div>
               
 
               <label className="flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 p-4 bg-white">

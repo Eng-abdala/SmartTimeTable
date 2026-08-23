@@ -8,10 +8,8 @@ import html2pdf from 'html2pdf.js'
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 const DAY_SHORT = { Saturday: 'Sat', Sunday: 'Sun', Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed' }
 
-// Morning shift: 20 standard periods/week (4 per day × 5 days, 7:45 AM – 12:15 PM)
-// When a class has >20 periods, overflow days start at 7:00 AM (5 sessions that day)
-// slotIndex 0–3 = standard slots on a 4-session day
-// slotIndex 0–4 = all 5 slots on a 5-session (overflow) day
+// Morning shift: 20 standard periods/week (4 per day × 5 days, 7:45 AM – 12:15 PM).
+// Extra hours may use 7:00 AM or the 1:00–3:00 PM overflow slots.
 const MORNING_STANDARD_SLOTS = [
   { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
   { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
@@ -101,12 +99,16 @@ function exportTableToExcel(tableElement, filename) {
   URL.revokeObjectURL(url)
 }
 
-function getSlotTimeLabel(shift, slotIndex) {
+function getSlotTimeLabel(shift, slotIndex, slotKind) {
   if (shift === 'Afternoon') {
     const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM', '5:00–5:50 PM', '5:50–6:40 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
   } else {
+    if (slotKind === 'early') return '7:00–7:45 AM'
+    if (slotKind === 'afternoon_1') return '1:00–2:00 PM'
+    if (slotKind === 'afternoon_2') return '2:00–3:00 PM'
     if (slotIndex === 5) return '1:00–2:00 PM'
+    if (slotIndex === 6) return '2:00–3:00 PM'
     if (slotIndex === 4) return '7:00–7:45 AM'
     const slots = ['7:45–8:45 AM', '8:45–9:45 AM', '10:15–11:15 AM', '11:15 AM–12:15 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
@@ -200,7 +202,8 @@ export function Schedule() {
               classObj: cls,
               subject: session.subject,
               type: session.type,
-              slotIndex: session.slotIndex
+              slotIndex: session.slotIndex,
+              slotKind: session.slotKind
             })
           }
         })
@@ -278,7 +281,7 @@ export function Schedule() {
           result.push({
             ...s,
             isClash,
-            timeLabel: getSlotTimeLabel(s.classObj.shift || selectedShift, s.slotIndex)
+            timeLabel: getSlotTimeLabel(s.classObj.shift || selectedShift, s.slotIndex, s.slotKind)
           })
         })
       }
@@ -292,7 +295,7 @@ export function Schedule() {
     const clashCellKeys = new Set()
 
     DAYS.forEach(day => {
-      const slotIndices = [0, 1, 2, 3, 4, 5]
+      const slotIndices = [0, 1, 2, 3, 4, 5, 6]
       
       const shifts = ['Morning', 'Afternoon']
       shifts.forEach(shift => {
@@ -374,20 +377,38 @@ export function Schedule() {
       }, -1)
     })
 
-    // Compute per-class per-day overflow (slotIndex 4/5 present = overflow)
+    // Older saved grids use shifted indexes on early-start days. New grids use
+    // stable physical indexes plus slotKind, so both formats remain viewable.
     const classOverflowMap = {} // { classId: { day: boolean } }
     const dayHasOverflow = {}   // { day: boolean } — true if ANY class has overflow that day
     const dayHasSixthPeriod = {} // { day: boolean } — true if ANY class has a sixth period
+    const dayUsesNewSlotModel = {}
+    const dayHasNewEarly = {}
+    const dayHasAfternoonOne = {}
+    const dayHasAfternoonTwo = {}
     if (isMorning) {
-      DAYS.forEach(day => { dayHasOverflow[day] = false; dayHasSixthPeriod[day] = false })
+      DAYS.forEach(day => {
+        dayHasOverflow[day] = false; dayHasSixthPeriod[day] = false
+        dayUsesNewSlotModel[day] = false; dayHasNewEarly[day] = false
+        dayHasAfternoonOne[day] = false; dayHasAfternoonTwo[day] = false
+      })
       classList.forEach(cls => {
         classOverflowMap[cls.id] = {}
         const grid = timetablesByClass[cls.id]
         DAYS.forEach(day => {
-          const hasOvf = !!(grid && grid[day] && grid[day].some(s => s.slotIndex === 4))
+          const sessions = grid?.[day] || []
+          const hasNewSlots = sessions.some(s => s.slotKind)
+          const hasOvf = !!(sessions.some(s => s.slotIndex === 4))
           classOverflowMap[cls.id][day] = hasOvf
-          if (hasOvf) dayHasOverflow[day] = true
-          if (grid && grid[day] && grid[day].some(s => s.slotIndex === 5)) dayHasSixthPeriod[day] = true
+          if (hasNewSlots) {
+            dayUsesNewSlotModel[day] = true
+            if (sessions.some(s => s.slotKind === 'early')) dayHasNewEarly[day] = true
+            if (sessions.some(s => s.slotKind === 'afternoon_1')) dayHasAfternoonOne[day] = true
+            if (sessions.some(s => s.slotKind === 'afternoon_2')) dayHasAfternoonTwo[day] = true
+          } else {
+            if (hasOvf) dayHasOverflow[day] = true
+            if (sessions.some(s => s.slotIndex === 5)) dayHasSixthPeriod[day] = true
+          }
         })
       })
     }
@@ -435,6 +456,18 @@ export function Schedule() {
                       ...(highestSlotByDay[day] >= 4 ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
                       ...(highestSlotByDay[day] >= 5 ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
                     ]
+                  : dayUsesNewSlotModel[day]
+                    ? [
+                        ...(dayHasNewEarly[day] ? [{ slotIndex: 4, time: '7:00 AM – 7:45 AM' }] : []),
+                        { slotIndex: 0, time: '7:45 AM – 8:45 AM' },
+                        { slotIndex: 1, time: '8:45 AM – 9:45 AM' },
+                        { isBreak: true, time: '9:45 AM – 10:15 AM (Break)' },
+                        { slotIndex: 2, time: '10:15 AM – 11:15 AM' },
+                        { slotIndex: 3, time: '11:15 AM – 12:15 PM' },
+                        ...((dayHasAfternoonOne[day] || dayHasAfternoonTwo[day]) ? [{ isBreak: true, time: '12:15 PM – 1:00 PM (Break)' }] : []),
+                        ...(dayHasAfternoonOne[day] ? [{ slotIndex: 5, time: '1:00 PM – 2:00 PM' }] : []),
+                        ...(dayHasAfternoonTwo[day] ? [{ slotIndex: 6, time: '2:00 PM – 3:00 PM' }] : []),
+                      ]
                   : dayHasOverflow[day]
                     ? [
                         { slotIndex: 0, time: '7:00 AM – 7:45 AM' },
@@ -496,7 +529,9 @@ export function Schedule() {
                             }
 
                             // For non-overflow classes on an overflow day, shift slotIndex down by 1
-                            const effectiveSlot = (dayIsOverflow && !hasOverflow && slot.slotIndex > 0)
+                            const effectiveSlot = (dayUsesNewSlotModel[day] || !(dayIsOverflow && !hasOverflow))
+                              ? slot.slotIndex
+                              : slot.slotIndex > 0
                               ? slot.slotIndex - 1
                               : slot.slotIndex
 

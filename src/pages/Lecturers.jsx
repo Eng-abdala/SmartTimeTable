@@ -14,6 +14,8 @@ const COLUMNS = [
   { key: 'lecturer_id', label: 'Lecturer ID' },
   { key: 'name',        label: 'Full Name'   },
   { key: 'available_days', label: 'Available Days (comma-separated or "All Week")' },
+  { key: 'morning_available_hours', label: 'Morning Available Hours' },
+  { key: 'afternoon_available_hours', label: 'Afternoon Available Hours' },
 ]
 
 function buildTemplateRow() {
@@ -21,6 +23,8 @@ function buildTemplateRow() {
     'Lecturer ID': 'LEC001',
     'Full Name': 'Yahye Ali Isse',
     'Available Days (comma-separated or "All Week")': 'All Week',
+    'Morning Available Hours': 12,
+    'Afternoon Available Hours': 3,
   }
 }
 
@@ -32,12 +36,14 @@ function exportToExcel(lecturers) {
     'Available Days (comma-separated or "All Week")': l.is_all_week
       ? 'All Week'
       : (l.available_days || []).join(', '),
+    'Morning Available Hours': l.morning_available_hours ?? 20,
+    'Afternoon Available Hours': l.afternoon_available_hours ?? 20,
   }))
 
   const ws = XLSX.utils.json_to_sheet(rows)
 
   // Column widths
-  ws['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 45 }]
+  ws['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 45 }, { wch: 26 }, { wch: 28 }]
 
   // Style header row (xlsx CE doesn't support cell styles without a pro plugin,
   // but we can at least set the header fill via sheetview comment)
@@ -48,7 +54,7 @@ function exportToExcel(lecturers) {
 
 function downloadTemplate() {
   const ws = XLSX.utils.json_to_sheet([buildTemplateRow()])
-  ws['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 45 }]
+  ws['!cols'] = [{ wch: 18 }, { wch: 30 }, { wch: 45 }, { wch: 26 }, { wch: 28 }]
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'Lecturers')
   XLSX.writeFile(wb, 'Lecturers_Template.xlsx')
@@ -59,6 +65,8 @@ function parseRow(raw) {
   const lecturer_id = (raw['Lecturer ID'] || '').toString().trim()
   const name        = (raw['Full Name'] || '').toString().trim()
   const daysRaw     = (raw['Available Days (comma-separated or "All Week")'] || '').toString().trim()
+  const morningRaw  = raw['Morning Available Hours']
+  const afternoonRaw = raw['Afternoon Available Hours']
 
   const errors = []
   if (!lecturer_id) errors.push('Missing Lecturer ID')
@@ -76,7 +84,12 @@ function parseRow(raw) {
     if (unknown.length) errors.push(`Unknown day(s): ${unknown.join(', ')}`)
   }
 
-  return { lecturer_id, name, is_all_week, available_days, errors }
+  const morning_available_hours = morningRaw === '' || morningRaw == null ? 20 : Number(morningRaw)
+  const afternoon_available_hours = afternoonRaw === '' || afternoonRaw == null ? 20 : Number(afternoonRaw)
+  if (!Number.isInteger(morning_available_hours) || morning_available_hours < 0 || morning_available_hours > 20) errors.push('Morning Available Hours must be a whole number from 0 to 20')
+  if (!Number.isInteger(afternoon_available_hours) || afternoon_available_hours < 0 || afternoon_available_hours > 20) errors.push('Afternoon Available Hours must be a whole number from 0 to 20')
+
+  return { lecturer_id, name, is_all_week, available_days, morning_available_hours, afternoon_available_hours, errors }
 }
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
@@ -104,6 +117,7 @@ export function Lecturers() {
   const [importRows, setImportRows]     = useState(null)   // parsed preview rows
   const [importing, setImporting]       = useState(false)
   const [importDone, setImportDone]     = useState(false)
+  const [search, setSearch]             = useState('')
 
   // ── Parse selected file ─────────────────────────────────────────────────────
   function handleFileChange(e) {
@@ -136,7 +150,9 @@ export function Lecturers() {
             const hasChange    =
               existing.name        !== r.name        ||
               existing.is_all_week !== r.is_all_week ||
-              daysChanged
+              daysChanged ||
+              (existing.morning_available_hours ?? 20) !== r.morning_available_hours ||
+              (existing.afternoon_available_hours ?? 20) !== r.afternoon_available_hours
             status = hasChange ? 'duplicate' : 'unchanged'
           } else {
             status = 'valid'
@@ -171,6 +187,8 @@ export function Lecturers() {
         name:           row.name,
         is_all_week:    row.is_all_week,
         available_days: row.available_days,
+        morning_available_hours: row.morning_available_hours,
+        afternoon_available_hours: row.afternoon_available_hours,
         taught_subjects: [],
       }
 
@@ -296,6 +314,8 @@ export function Lecturers() {
                   <th className="px-4 py-3 text-left">Lecturer ID</th>
                   <th className="px-4 py-3 text-left">Full Name</th>
                   <th className="px-4 py-3 text-left">Available Days</th>
+                  <th className="px-4 py-3 text-left">Morning Hours</th>
+                  <th className="px-4 py-3 text-left">Afternoon Hours</th>
                   <th className="px-4 py-3 text-left">Status</th>
                   <th className="px-4 py-3 text-left">Notes</th>
                 </tr>
@@ -323,6 +343,8 @@ export function Lecturers() {
                         : <span className="text-slate-400">—</span>
                       }
                     </td>
+                    <td className="px-4 py-3 text-slate-600">{row.morning_available_hours}</td>
+                    <td className="px-4 py-3 text-slate-600">{row.afternoon_available_hours}</td>
                     <td className="px-4 py-3"><StatusBadge status={row.status} /></td>
                     <td className="px-4 py-3 text-xs text-slate-500">
                       {row.errors.length ? (
@@ -381,9 +403,23 @@ export function Lecturers() {
       )}
 
       {/* ── Lecturers Table ────────────────────────────────────────────────── */}
+      <div className="mb-4 max-w-md">
+        <label className="sr-only" htmlFor="lecturer-search">Search lecturers</label>
+        <input
+          id="lecturer-search"
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search by lecturer ID or name…"
+          className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-brand-600 focus:ring-2 focus:ring-brand-600/10"
+        />
+      </div>
       <ManagerTable
-        headers={['Lecturer ID', 'Name', 'Availability', 'Actions']}
-        rows={lecturers}
+        headers={['Lecturer ID', 'Name', 'Availability', 'Morning Hours', 'Afternoon Hours', 'Actions']}
+        rows={lecturers.filter((person) => {
+          const query = search.trim().toLowerCase()
+          return !query || person.lecturer_id?.toLowerCase().includes(query) || person.name?.toLowerCase().includes(query)
+        })}
         empty="No lecturers registered yet. Add one manually or import an Excel file."
         render={(person) => {
           const taught = getLecturerTaughtSubjects ? getLecturerTaughtSubjects(person.id) : (person.taught_subjects || [])
@@ -396,6 +432,8 @@ export function Lecturers() {
                   {person.is_all_week ? 'Available all week' : person.available_days.join(', ')}
                 </span>
               </td>
+              <td className="px-6 py-4 font-medium text-slate-700">{person.morning_available_hours ?? 20}</td>
+              <td className="px-6 py-4 font-medium text-slate-700">{person.afternoon_available_hours ?? 20}</td>
               <td className="px-6 py-4">
                 <div className="flex gap-2">
                   <button onClick={() => setModal({ type: 'lecturer', data: person })} className="rounded-lg p-2 text-brand-600 hover:bg-cyan-50"><Icon name="edit" className="h-4 w-4" /></button>
