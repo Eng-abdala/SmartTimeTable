@@ -26,6 +26,15 @@ function isMorningTwoHourPair(first, second) {
     (first === 5 && second === 6)
 }
 
+// Afternoon classes use the four regular periods through 5:00 PM. Slot IDs
+// remain the original physical IDs so saved timetables and lecturer-conflict
+// checks are unaffected.
+const AFTERNOON_DAY_SLOTS = [0, 1, 2, 3]
+
+function isAfternoonTwoHourPair(first, second) {
+  return (first === 0 && second === 1) || (first === 2 && second === 3)
+}
+
 function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0) {
   const selection = Object.fromEntries(DAYS.map(day => [day, { early: false, afternoon_1: false, afternoon_2: false }]))
   const extras = requiredPeriods
@@ -126,7 +135,7 @@ function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning')
           (first === 2 && second === 3) ||
           (first === 5 && second === 6)
       }
-      return (first === 0 && second === 1) || (first === 1 && second === 2)
+      return isAfternoonTwoHourPair(first, second)
     }
 
     const blocksByDay = DAYS.map(day => {
@@ -316,7 +325,9 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   })) {
     DAYS.forEach(day => {
       const selected = overflowSelection?.[day] || {}
-      daySlotsByDay[day] = getMorningOverflowDaySlots(selected)
+      daySlotsByDay[day] = shift === 'Morning'
+        ? getMorningOverflowDaySlots(selected)
+        : [...AFTERNOON_DAY_SLOTS]
     })
   } else {
     // Do not force a class with (for example) 18 hours into 4+4+4+3+3.
@@ -324,7 +335,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     // in 2-hour blocks. Every normal day offers its four standard slots and
     // unused slots remain empty when the curriculum has fewer than 20 hours.
     DAYS.forEach(day => {
-      daySlotsByDay[day] = [0, 1, 2, 3]
+      daySlotsByDay[day] = shift === 'Morning' ? [0, 1, 2, 3] : [...AFTERNOON_DAY_SLOTS]
     })
   }
 
@@ -430,7 +441,7 @@ function getBlockingSlotIndex(currentShift, otherShift, otherSlotIndex) {
 // it can give up after choosing a poor early slot even though a valid full
 // timetable exists. This search keeps each subject's lecturer consistent and
 // only places complete 2-hour blocks (plus one final 1-hour block when needed).
-function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection) {
+function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection, allowSplitPairBlocks = false) {
   const totalPeriods = semesterSubjects.reduce((sum, subject) =>
     sum + (Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0), 0)
 
@@ -441,10 +452,12 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
   })) {
     DAYS.forEach(day => {
       const extra = overflowSelection?.[day] || {}
-      availableSlots[day] = getMorningOverflowDaySlots(extra)
+      availableSlots[day] = shift === 'Morning'
+        ? getMorningOverflowDaySlots(extra)
+        : [...AFTERNOON_DAY_SLOTS]
     })
   } else {
-    DAYS.forEach(day => { availableSlots[day] = [0, 1, 2, 3] })
+    DAYS.forEach(day => { availableSlots[day] = shift === 'Morning' ? [0, 1, 2, 3] : [...AFTERNOON_DAY_SLOTS] })
   }
 
   const blocks = []
@@ -465,7 +478,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
     ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
     : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
   const arePairable = (daySlots, first, second) => {
-    if (shift !== 'Morning') return (first === 0 && second === 1) || (first === 1 && second === 2)
+    if (shift !== 'Morning') return isAfternoonTwoHourPair(first, second)
     // On an early-start day, 0+1 would strand the 7:00 AM slot and prevent
     // the required final 1-hour lesson from fitting. Keep the two usable
     // pairs as 4+0 and 2+3 instead.
@@ -516,10 +529,12 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
         if (subjectDays.get(block.subject.id)?.has(day)) continue
         if (block.type === 'Lab' && earliestTheoryDay.has(block.subject.id) && DAYS.indexOf(day) < earliestTheoryDay.get(block.subject.id)) continue
         const daySlots = availableSlots[day]
-        for (let start = 0; start <= daySlots.length - block.size; start++) {
-          const slots = daySlots.slice(start, start + block.size)
+        const slotGroups = block.size === 2 && allowSplitPairBlocks
+          ? daySlots.flatMap((first, index) => daySlots.slice(index + 1).map(second => [first, second]))
+          : Array.from({ length: daySlots.length - block.size + 1 }, (_, start) => daySlots.slice(start, start + block.size))
+        for (const slots of slotGroups) {
           if (slots.some(slot => occupied[day].has(slot))) continue
-          if (block.size === 2 && !arePairable(daySlots, slots[0], slots[1])) continue
+          if (block.size === 2 && !allowSplitPairBlocks && !arePairable(daySlots, slots[0], slots[1])) continue
           if (!isFreeForLecturer(lecturer, day, slots)) continue
 
           const oldTheoryDay = earliestTheoryDay.get(block.subject.id)
@@ -566,9 +581,20 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
 function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, initialWeeklyLoad, classCountMap, overflowSelection) {
   for (let attempt = 0; attempt < 50; attempt++) {
     const res = generateSinglePassTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, initialWeeklyLoad, classCountMap, overflowSelection, attempt)
-    if (res.clashCount === 0 && res.emptyLecturerCount === 0 && res.layoutViolationCount === 0 && res.distributionViolationCount === 0) return res.timetable
+    if (res.clashCount === 0 && res.emptyLecturerCount === 0 && res.layoutViolationCount === 0 && res.distributionViolationCount === 0) {
+      return { timetable: res.timetable, needsManualBlockCorrection: false }
+    }
   }
-  return generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection)
+  const strictGrid = generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection)
+  if (strictGrid) return { timetable: strictGrid, needsManualBlockCorrection: false }
+
+  // Keep the timetable editable when lecturer availability leaves no strict
+  // two-hour arrangement. Sessions remain conflict-free, and the user can use
+  // drag-and-drop to repair the displayed block layout.
+  const editableGrid = generateWithBacktracking(
+    semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection, true
+  )
+  return editableGrid ? { timetable: editableGrid, needsManualBlockCorrection: true } : null
 }
 
 export function Timetable() {
@@ -853,18 +879,21 @@ export function Timetable() {
       })
     }
 
-    const grid = generateTimetable(
+    const generation = generateTimetable(
       semesterSubjects, lecturers, selectedClass.shift,
       selectedClass.id, getRandomLecturerForClass, getSubjectLecturers, busyMap, dailyLoad, weeklyLoad, classCountMap, overflowSelection
     )
-    if (!grid) {
-      setNotice('Could not create a valid timetable while keeping every subject in 2-hour blocks (with only one final 1-hour block for odd totals). Check lecturer availability or generate after adjusting the class schedule.', 'error')
+    if (!generation) {
+      setNotice('Could not create a timetable because the selected lecturers have no conflict-free available slots. Check lecturer availability or adjust the class schedule.', 'error')
       return
     }
     setGlobalBusyMap(busyMap)
-    setTimetable(grid)
+    setTimetable(generation.timetable)
     setGenerated(true)
     setIsSaved(false)
+    if (generation.needsManualBlockCorrection) {
+      setNotice('Timetable generated, but one or more 2-hour subject blocks could not be placed consecutively. Use drag-and-drop to arrange them before saving.', 'warning')
+    }
   }
 
   const validateTimetableBeforeSave = async () => {
