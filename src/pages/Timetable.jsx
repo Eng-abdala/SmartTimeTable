@@ -7,26 +7,61 @@ import { supabase } from '../lib/supabase'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), minimumEarlyPeriods = 0) {
+// Placement order for an early-start morning day.  The physical time order is
+// 7:00, 7:45, 8:45, 10:15 and 11:15, but 8:45–10:15 crosses the break.  Put
+// the two valid 2-hour pairs first and leave 8:45 as the final single slot.
+// This order is used for every selected day, never for a particular weekday.
+function getMorningOverflowDaySlots(selection) {
+  const slots = selection?.early ? [4, 0, 2, 3] : [0, 1, 2, 3]
+  if (selection?.afternoon_1) slots.push(5)
+  if (selection?.afternoon_2) slots.push(6)
+  if (selection?.early) slots.push(1)
+  return slots
+}
+
+function isMorningTwoHourPair(first, second) {
+  return (first === 4 && second === 0) ||
+    (first === 0 && second === 1) ||
+    (first === 2 && second === 3) ||
+    (first === 5 && second === 6)
+}
+
+function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0) {
   const selection = Object.fromEntries(DAYS.map(day => [day, { early: false, afternoon_1: false, afternoon_2: false }]))
   const extras = requiredPeriods
-  // An odd-hour subject needs one single period. Early-start days provide a
-  // usable single period alongside two 2-hour blocks, so reserve enough of
-  // them before choosing afternoon overflow periods.
-  const defaultEarly = Math.min(extras, Math.max(minimumEarlyPeriods, totalHours <= 23 ? extras : Math.max(0, totalHours - 22)))
+  // A 7:00 AM period is a required single-hour slot. Use no more than the
+  // curriculum's odd-hour subjects need; the remaining capacity is added as
+  // 1:00–2:00 PM pairs so 2-hour subject blocks can still fit.
+  const defaultEarly = Math.min(extras, requiredSingleSlots, DAYS.length)
   // Put early-start slots later in the week. An odd subject's final 1-hour
   // block then has an earlier day available for its preceding 2-hour block.
   DAYS.slice(DAYS.length - defaultEarly).forEach(day => { selection[day].early = true })
   let remaining = extras - defaultEarly
   let dayIndex = 0
-  while (remaining > 0) {
+  let remainingSingles = requiredSingleSlots - defaultEarly
+  while (remainingSingles > 0 && remaining > 0) {
     const day = DAYS[dayIndex % DAYS.length]
+    selection[day].afternoon_1 = true
+    remainingSingles--
+    remaining--
+    dayIndex++
+  }
+  dayIndex = 0
+  while (remaining > 0) {
+    const day = DAYS.find(candidate => !selection[candidate].afternoon_1) || DAYS[dayIndex % DAYS.length]
     selection[day].afternoon_1 = true
     remaining--
     if (remaining > 0) { selection[day].afternoon_2 = true; remaining-- }
     dayIndex++
   }
   return selection
+}
+
+function getOverflowSingleSlotCount(selection) {
+  return DAYS.reduce((total, day) => {
+    const periods = selection[day] || {}
+    return total + Number(!!periods.early) + Number(!!periods.afternoon_1 && !periods.afternoon_2)
+  }, 0)
 }
 
 function getSemesterLevel(semester) {
@@ -252,11 +287,11 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     const daySlots = getDaySlots(day)
     const blockSlots = daySlots.slice(startSlot, startSlot + size)
     if (blockSlots.length !== size) return null
-    // Do not split a two-period block over either the morning or midday break.
-    if (size > 1 && blockSlots.some((slot, index) => index > 0 && (
-      (blockSlots[index - 1] === 1 && slot === 2) ||
-      (blockSlots[index - 1] === 3 && slot === 5)
-    ))) return null
+    // A morning two-period subject must use one of the real consecutive pairs;
+    // in particular, it can never bridge 8:45 AM to 1:00 PM.
+    if (size > 1 && shift === 'Morning' && blockSlots.some((slot, index) =>
+      index > 0 && !isMorningTwoHourPair(blockSlots[index - 1], slot)
+    )) return null
 
     const lecturer = preferredLecturer
     if (!isLecturerAvailableOnDay(lecturer, day)) return null
@@ -281,10 +316,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   })) {
     DAYS.forEach(day => {
       const selected = overflowSelection?.[day] || {}
-      const slots = [...(selected.early ? [4] : []), 0, 1, 2, 3]
-      if (selected.afternoon_1) slots.push(5)
-      if (selected.afternoon_2) slots.push(6)
-      daySlotsByDay[day] = slots
+      daySlotsByDay[day] = getMorningOverflowDaySlots(selected)
     })
   } else {
     // Do not force a class with (for example) 18 hours into 4+4+4+3+3.
@@ -373,8 +405,14 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   // 3 hours = 2+1 across two days; 4 = 2+2 across two days; 5 = 2+2+1 across three days.
   const distributionViolationCount = getSubjectDistributionErrors(timetable, semesterSubjects, shift).length
 
-  // Keep placement order and slot indexes intact. Reordering here would move
-  // a lecturer into another time slot after conflicts have already been checked.
+  // Sorting only changes display order, never a session's physical slot index.
+  // It keeps 8:45–9:45 directly below 7:45–8:45 in the generated table.
+  const slotOrder = shift === 'Morning'
+    ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
+    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+  DAYS.forEach(day => timetable[day].sort((a, b) =>
+    (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex)
+  ))
   return { timetable, emptyLecturerCount, clashCount, layoutViolationCount, distributionViolationCount }
 }
 
@@ -403,7 +441,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
   })) {
     DAYS.forEach(day => {
       const extra = overflowSelection?.[day] || {}
-      availableSlots[day] = [...(extra.early ? [4] : []), 0, 1, 2, 3, ...(extra.afternoon_1 ? [5] : []), ...(extra.afternoon_2 ? [6] : [])]
+      availableSlots[day] = getMorningOverflowDaySlots(extra)
     })
   } else {
     DAYS.forEach(day => { availableSlots[day] = [0, 1, 2, 3] })
@@ -628,23 +666,24 @@ export function Timetable() {
   const oddSubjectCount = semesterSubjects.filter(subject =>
     ((Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0)) % 2 === 1
   ).length
-  // A normal 4-period day can hold one final 1-hour block only by leaving one
-  // slot empty. Early-start days avoid that loss. This calculates the minimum
-  // extra capacity needed, rather than incorrectly requiring one extra slot
-  // for every odd-hour subject (22 hours with four odd subjects needs 3, not 4).
-  const requiredOverflowPeriods = Math.max(
-    0,
-    curriculumHours - 20,
-    Math.ceil((curriculumHours - 20 + oddSubjectCount) / 2),
-  )
+  // Overflow choices are exactly the hours beyond the normal 20-hour week.
+  // Keeping this separate from the generator means the placement logic and
+  // its 2-hour block rules remain unchanged.
+  const requiredOverflowPeriods = Math.max(0, curriculumHours - 20)
   const selectedOverflowPeriods = DAYS.reduce((total, day) => total + [
     overflowSelection[day]?.early,
     overflowSelection[day]?.afternoon_1,
     overflowSelection[day]?.afternoon_2,
   ].filter(Boolean).length, 0)
+  const selectedOverflowSingleSlots = getOverflowSingleSlotCount(overflowSelection)
+  const hasValidOverflowShape = selectedOverflowSingleSlots <= oddSubjectCount
 
   useEffect(() => {
-    setOverflowSelection(createOverflowSelection(curriculumHours, requiredOverflowPeriods, oddSubjectCount))
+    setOverflowSelection(createOverflowSelection(
+      curriculumHours,
+      requiredOverflowPeriods,
+      Math.min(oddSubjectCount, requiredOverflowPeriods),
+    ))
   }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount])
 
   // Load global busy map for other classes
@@ -749,8 +788,8 @@ export function Timetable() {
       setNotice(`${selectedClass.name} already has a saved timetable. Delete it first if you need to create a replacement.`, 'error')
       return
     }
-    if (selectedClass.shift === 'Morning' && selectedOverflowPeriods < requiredOverflowPeriods) {
-      setNotice(`Choose at least ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} so the 2-hour and final 1-hour subject blocks fit correctly.`, 'error')
+    if (selectedClass.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape)) {
+      setNotice(`Choose exactly ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} before generating.`, 'error')
       return
     }
 
@@ -1432,12 +1471,15 @@ export function Timetable() {
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-bold text-brand-950">Choose overflow periods</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Select at least the minimum extra periods. They include space for final 1-hour blocks in odd-hour subjects. You can mix 7:00 AM and 1:00–3:00 PM.</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Select exactly the extra hours needed. Use 7:00 AM or 1:00 PM; 2:00 PM is available only after 1:00 PM on the same day.</p>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${selectedOverflowPeriods >= requiredOverflowPeriods ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                    {selectedOverflowPeriods} / min {requiredOverflowPeriods}
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${selectedOverflowPeriods === requiredOverflowPeriods && hasValidOverflowShape ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {selectedOverflowPeriods} / {requiredOverflowPeriods}
                   </span>
                 </div>
+                {!hasValidOverflowShape && (
+                  <p className="mt-3 text-xs font-medium text-amber-800">This selection has too many single-hour periods for the odd-hour subjects. Replace an extra 7:00 AM choice with a 1:00–2:00 PM pair.</p>
+                )}
                 <div className="space-y-2">
                   {DAYS.map(day => (
                     <div key={day} className="grid grid-cols-[78px_repeat(3,minmax(0,1fr))] items-center gap-2 text-xs">
@@ -1449,20 +1491,29 @@ export function Timetable() {
                       ].map(([period, label]) => {
                         const checked = !!overflowSelection[day]?.[period]
                         const needsFirstAfternoon = period === 'afternoon_2' && !overflowSelection[day]?.afternoon_1
+                        const reachedOverflowLimit = !checked && selectedOverflowPeriods >= requiredOverflowPeriods
                         return (
                           <label key={period} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-slate-700">
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={needsFirstAfternoon}
-                              onChange={event => setOverflowSelection(current => ({
-                                ...current,
-                                [day]: {
-                                  ...current[day],
-                                  [period]: event.target.checked,
-                                  ...(period === 'afternoon_1' && !event.target.checked ? { afternoon_2: false } : {}),
-                                },
-                              }))}
+                              disabled={needsFirstAfternoon || reachedOverflowLimit}
+                              onChange={event => setOverflowSelection(current => {
+                                const currentCount = DAYS.reduce((total, currentDay) => total + [
+                                  current[currentDay]?.early,
+                                  current[currentDay]?.afternoon_1,
+                                  current[currentDay]?.afternoon_2,
+                                ].filter(Boolean).length, 0)
+                                if (event.target.checked && currentCount >= requiredOverflowPeriods) return current
+                                return {
+                                  ...current,
+                                  [day]: {
+                                    ...current[day],
+                                    [period]: event.target.checked,
+                                    ...(period === 'afternoon_1' && !event.target.checked ? { afternoon_2: false } : {}),
+                                  },
+                                }
+                              })}
                               className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
                             />
                             {label}
@@ -1496,7 +1547,7 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable || (selectedClass?.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape))}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />

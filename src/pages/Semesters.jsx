@@ -126,7 +126,7 @@ export function Semesters() {
     <>
       <header className="mb-8 flex flex-col justify-between gap-5 rounded-3xl border border-brand-100 bg-gradient-to-br from-white to-brand-50/60 p-6 shadow-sm sm:flex-row sm:items-center">
         <div>
-          <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
+          <p className="text-sm font-medium text-brand-600"> Faculty of Computer and IT</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Semesters</h1>
         </div>
         <button
@@ -145,7 +145,7 @@ export function Semesters() {
               <Icon name="layers" className="h-4 w-4" />
             </span>
             <div>
-              <h2 className="text-base font-bold text-brand-950">General Semesters</h2>
+              <h2 className="text-base font-bold text-brand-950">Foundation</h2>
               <p className="text-xs text-slate-500">Semester 1 · 2 · 3 — no department required</p>
             </div>
           </div>

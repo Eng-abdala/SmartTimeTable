@@ -29,12 +29,12 @@ export function Login() {
       <section className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-brand-950/10">
         <div className="bg-gradient-to-br from-brand-950 via-brand-800 to-indigo-900 px-8 py-9 text-center text-white">
           <div className="mx-auto mb-4 grid h-16 w-16 place-items-center overflow-hidden rounded-2xl bg-white p-1 shadow-lg"><img src={facultyLogo} alt="Faculty logo" className="h-full w-full rounded-xl object-cover" /></div>
-          <p className="text-sm font-medium text-cyan-100">University IT Faculty</p>
+          <p className="text-sm font-medium text-cyan-100">TimeTable Generator</p>
           <h1 className="mt-1 text-2xl font-bold">HOD Portal</h1>
           <p className="mt-2 text-sm text-cyan-100/80">Sign in to manage the timetable system.</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5 p-8">
-          <label className="block text-sm font-bold text-brand-950">HOD ID
+          <label className="block text-sm font-bold text-brand-950">username
             <input type="text" required autoComplete="username" value={hodId} onChange={event => setHodId(event.target.value)} placeholder="e.g. hoojo" className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-brand-500 focus:bg-white focus:ring-4 focus:ring-brand-500/10" />
           </label>
           <label className="block text-sm font-bold text-brand-950">Password
