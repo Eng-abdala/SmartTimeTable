@@ -21,38 +21,23 @@ function sortByNumber(list) {
   })
 }
 
-function SemesterCard({ semester, subjects, navigate, setModal, remove }) {
-  const items = subjects.filter(s => s.semester_id === semester.id)
-  const hours = items.reduce((sum, s) => sum + s.total_hours, 0)
+function SemesterPicker({ id, semesters, navigate, placeholder, tone = 'brand' }) {
   return (
-    <div
-      onClick={() => navigate(`/semesters/${semester.id}`)}
-      className="group relative cursor-pointer rounded-2xl border border-slate-100 bg-white p-5 text-left shadow-sm transition hover:-translate-y-1 hover:border-brand-500/30 hover:shadow-lg"
-    >
-      <div className="flex items-start justify-between">
-        <span className="text-brand-500 transition group-hover:translate-x-1 block"><Icon name="arrow" /></span>
-        <div className="flex gap-1 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
-          <button
-            onClick={(e) => { e.stopPropagation(); setModal({ type: 'semester', data: semester }) }}
-            className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-brand-600"
-            title="Edit Semester"
-          >
-            <Icon name="edit" className="h-4 w-4" />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); remove('semesters', semester.id) }}
-            className="rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-500"
-            title="Delete Semester"
-          >
-            <Icon name="trash" className="h-4 w-4" />
-          </button>
-        </div>
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="mb-3 flex items-center gap-2">
+        <span className={`grid h-8 w-8 place-items-center rounded-lg ${tone === 'slate' ? 'bg-slate-800' : 'bg-brand-600'} text-white`}><Icon name="layers" className="h-4 w-4" /></span>
+        <p className="text-sm font-bold text-brand-950">Choose a semester</p>
       </div>
-      <h3 className="mt-2 text-lg font-bold text-brand-950">{semester.name}</h3>
-      <div className="mt-4 flex border-t border-slate-100 pt-3 text-sm">
-        <span className="flex-1 text-slate-500"><b className="text-brand-950">{items.length}</b> subjects</span>
-        <span className="text-slate-500"><b className="text-brand-950">{hours}</b> hrs</span>
-      </div>
+      <select
+        id={id}
+        defaultValue=""
+        onChange={event => event.target.value && navigate(`/semesters/${event.target.value}`)}
+        className="w-full cursor-pointer appearance-none rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none transition hover:bg-white focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
+      >
+        <option value="" disabled>{placeholder}</option>
+        {semesters.map(semester => <option key={semester.id} value={semester.id}>{semester.name}</option>)}
+      </select>
+      <p className="mt-3 text-xs leading-5 text-slate-500">Select a semester to manage its curriculum and subjects.</p>
     </div>
   )
 }
@@ -139,7 +124,7 @@ export function Semesters() {
 
   return (
     <>
-      <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      <header className="mb-8 flex flex-col justify-between gap-5 rounded-3xl border border-brand-100 bg-gradient-to-br from-white to-brand-50/60 p-6 shadow-sm sm:flex-row sm:items-center">
         <div>
           <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Semesters</h1>
@@ -153,8 +138,8 @@ export function Semesters() {
       </header>
 
       {/* ── General Semesters (1–3) ───────────────────────────── */}
-      <section className="mb-10">
-        <div className="mb-4 flex items-center justify-between">
+      <section className="mb-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-6 flex items-center border-b border-slate-100 pb-5">
           <div className="flex items-center gap-3">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800 text-white">
               <Icon name="layers" className="h-4 w-4" />
@@ -164,36 +149,26 @@ export function Semesters() {
               <p className="text-xs text-slate-500">Semester 1 · 2 · 3 — no department required</p>
             </div>
           </div>
-          <button
-            onClick={() => setModal('semester')}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-brand-700 shadow-sm transition hover:bg-brand-50 hover:border-brand-300"
-          >
-            <Icon name="plus" className="h-3.5 w-3.5" /> Add Semester
-          </button>
         </div>
 
         {generalSemesters.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm text-slate-400">
-            No general semesters yet. Click "Add Semester" to create Semester 1, 2, or 3.
+            General semesters are set up by the system.
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {generalSemesters.map(s => (
-              <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} setModal={setModal} remove={remove} />
-            ))}
-          </div>
+          <div className="max-w-xl"><SemesterPicker id="general-semester" semesters={generalSemesters} navigate={navigate} placeholder="— Select Semester 1, 2, or 3 —" tone="slate" /></div>
         )}
       </section>
 
       {/* ── Department Sections (4+) ──────────────────────────── */}
-      <div className="space-y-8">
+      <div className="space-y-6">
         {departmentSections.map((dept, index) => {
           const color = DEPT_COLORS[index % DEPT_COLORS.length]
           const list = deptSemesters(dept.code)
           const department = departmentCatalog.find(item => item.shortform === dept.code)
           return (
-            <section key={dept.code} className={`rounded-2xl border ${color.border} ${color.light} p-6`}>
-              <div className="mb-5 flex items-center justify-between">
+            <section key={dept.code} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-6 flex items-center justify-between border-b border-slate-100 pb-5">
                 <div className="flex items-center gap-3">
                   <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${color.bg} text-white font-bold text-sm`}>
                     {dept.code}
@@ -222,11 +197,7 @@ export function Semesters() {
                   No semesters yet for {dept.label}. Click "Add Semester" above.
                 </div>
               ) : (
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {list.map(s => (
-                    <SemesterCard key={s.id} semester={s} subjects={subjects} navigate={navigate} setModal={setModal} remove={remove} />
-                  ))}
-                </div>
+                <div className="max-w-xl"><SemesterPicker id={`department-semester-${dept.code}`} semesters={list} navigate={navigate} placeholder="— Select a semester —" /></div>
               )}
             </section>
           )

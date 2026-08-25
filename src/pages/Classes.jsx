@@ -1,10 +1,26 @@
 import { useOutletContext, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { ManagerTable } from '../components/ManagerTable'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Empty } from '../components/Empty'
 import { supabase } from '../lib/supabase'
 import { getYearSemesterMap } from '../lib/semesterUtils'
+
+// Semester 1 begins in September. Each semester lasts six months:
+// Sep-Feb = odd semester; Mar-Aug = even semester.
+function getCurrentSemesterLevel(intakeYear, now = new Date()) {
+  const yearGap = now.getFullYear() - Number(intakeYear)
+  const month = now.getMonth() // January = 0, September = 8
+  if (yearGap < 0 || (yearGap === 0 && month < 8)) return 0
+  if (month < 2) return (yearGap * 2) - 1
+  if (month < 8) return yearGap * 2
+  return (yearGap * 2) + 1
+}
+
+function getAllowedSemesterLevel(intakeYear) {
+  // A newly created intake is prepared for Semester 1 even before September.
+  return Math.max(1, getCurrentSemesterLevel(intakeYear))
+}
 
 export function Classes() {
   const { classes, academicYears, departments, departmentCatalog, semesters, setModal, remove, loadData, setNotice } = useOutletContext()
@@ -20,6 +36,43 @@ export function Classes() {
 
   const [showDeptPicker, setShowDeptPicker] = useState(false)
   const [deptError, setDeptError] = useState('')
+  const isAutoSyncing = useRef(false)
+
+  // Sync each intake to its current semester whenever the Classes page loads.
+  // A browser cannot run while it is closed, so the change is applied on the
+  // first app visit after a six-month boundary.
+  useEffect(() => {
+    if (isAutoSyncing.current || !classes.length || !semesters.length) return
+
+    const updates = classes.flatMap(classItem => {
+      const level = getCurrentSemesterLevel(classItem.intake_year)
+      if (level < 1) return []
+      const department = departments.find(item => item.id === classItem.department_id) || departments.find(item =>
+        item.intake_year === classItem.intake_year && classItem.name.toUpperCase().startsWith(item.shortform.toUpperCase())
+      )
+      const targetSemester = semesters.find(semester => {
+        const sameLevel = new RegExp(`^Semester\\s*${level}(?:\\s|$)`, 'i').test(semester.name)
+        if (!sameLevel) return false
+        return level <= 3 ? !semester.department : semester.department === department?.shortform
+      })
+      return targetSemester && targetSemester.id !== classItem.semester_id
+        ? [{ id: classItem.id, semesterId: targetSemester.id }]
+        : []
+    })
+
+    if (!updates.length) return
+    isAutoSyncing.current = true
+    Promise.all(updates.map(update => supabase.from('classes').update({ semester_id: update.semesterId }).eq('id', update.id)))
+      .then(results => {
+        const failed = results.find(result => result.error)
+        if (failed) setNotice(`Could not update intake semester: ${failed.error.message}`, 'error')
+        else {
+          setNotice(`Semester assignment updated automatically for ${updates.length} class${updates.length === 1 ? '' : 'es'}.`, 'success')
+          return loadData()
+        }
+      })
+      .finally(() => { isAutoSyncing.current = false })
+  }, [classes, departments, loadData, semesters, setNotice])
 
 
 
@@ -44,15 +97,15 @@ export function Classes() {
   const removeAcademicYear = async (year) => {
     const classCount = classes.filter(c => c.intake_year === year).length
     if (classCount > 0) {
-      setNotice(`Cannot delete Class of ${year}: delete its ${classCount} class${classCount === 1 ? '' : 'es'} first.`, 'error')
+      setNotice(`Cannot delete Intake ${year}: delete its ${classCount} class${classCount === 1 ? '' : 'es'} first.`, 'error')
       return
     }
     const departmentCount = departments.filter(d => d.intake_year === year).length
     if (departmentCount > 0) {
-      setNotice(`Cannot delete Class of ${year}: delete its ${departmentCount} department${departmentCount === 1 ? '' : 's'} first.`, 'error')
+      setNotice(`Cannot delete Intake ${year}: delete its ${departmentCount} department${departmentCount === 1 ? '' : 's'} first.`, 'error')
       return
     }
-    if (!window.confirm(`Delete the empty Class of ${year}?`)) return
+    if (!window.confirm(`Delete the empty Intake ${year}?`)) return
     const { error } = await supabase.from('academic_years').delete().eq('year', year)
     
     if (error) {
@@ -137,7 +190,7 @@ export function Classes() {
       const semIds = updates.map(u => u.semId)
       const conflictClass = classes.find(c => c.intake_year !== year && semIds.includes(c.semester_id))
       if (conflictClass) {
-        setNotice(`Cannot assign: this semester level is already used by Class of ${conflictClass.intake_year}.`, 'error')
+        setNotice(`Cannot assign: this semester level is already used by Intake ${conflictClass.intake_year}.`, 'error')
         return
       }
 
@@ -149,13 +202,13 @@ export function Classes() {
       if (missingDepts.length > 0) {
         setNotice(`⚠ Assigned to some depts, but missing semesters for: ${missingDepts.join(', ')}. Create them first!`, 'error')
       } else {
-        setNotice(`✅ Semesters auto-assigned for all departments in Class of ${year}!`)
+        setNotice(`✅ Semesters auto-assigned for all departments in Intake ${year}!`)
       }
     } else {
       // General mode: assign the specific selected semester to all classes in the year
       const conflictClass = classes.find(c => c.intake_year !== year && c.semester_id === semPickerChoice)
       if (conflictClass) {
-        setNotice(`Cannot assign: this semester is already used by Class of ${conflictClass.intake_year}.`, 'error')
+        setNotice(`Cannot assign: this semester is already used by Intake ${conflictClass.intake_year}.`, 'error')
         return
       }
 
@@ -164,7 +217,7 @@ export function Classes() {
         .update({ semester_id: semPickerChoice })
         .in('id', yearCls.map(c => c.id))
       if (error) { setNotice(error.message, 'error'); return }
-      setNotice(`✅ Semester "${chosenSem.name}" assigned to all classes in Class of ${year}!`)
+      setNotice(`✅ Semester "${chosenSem.name}" assigned to all classes in Intake ${year}!`)
     }
 
     await loadData()
@@ -173,11 +226,11 @@ export function Classes() {
   }
 
 
-  // Add an existing catalogue department to the selected Class of year.
+  // Add an existing catalogue department to the selected intake year.
   const addDepartmentToYear = async (department) => {
     if (!department || !selectedYear) return
     if (departments.some(d => d.shortform === department.shortform && d.intake_year === selectedYear)) {
-      setDeptError(`${department.name} is already part of Class of ${selectedYear}.`)
+      setDeptError(`${department.name} is already part of Intake ${selectedYear}.`)
       return
     }
     const { error } = await supabase.from('departments').insert([{
@@ -251,7 +304,7 @@ export function Classes() {
       <section>
         <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
-            <p className="text-sm font-medium text-brand-600">Class of {selectedYear} · {currentDept.shortform}</p>
+            <p className="text-sm font-medium text-brand-600">Intake {selectedYear} · {currentDept.shortform}</p>
             <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">{currentDept.name}</h1>
           </div>
         </header>
@@ -315,7 +368,7 @@ export function Classes() {
         <header className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <p className="text-sm font-medium text-brand-600">University IT Faculty</p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Class of {selectedYear}</h1>
+            <h1 className="mt-1 text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">Intake {selectedYear}</h1>
           </div>
         </header>
 
@@ -369,7 +422,7 @@ export function Classes() {
         )}
 
         {!yearDepartments.length ? (
-          <Empty title={`No departments for Class of ${selectedYear}`} text='Click "Add Department" to select one.' />
+          <Empty title={`No departments for Intake ${selectedYear}`} text='Click "Add Department" to select one.' />
         ) : (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {yearDepartments.map((dept) => (
@@ -413,6 +466,7 @@ export function Classes() {
       {/* ── Semester Picker Modal ── */}
       {semPickerYear !== null && (() => {
         const yearDepts = departments.filter(d => d.intake_year === semPickerYear)
+        const allowedLevel = getAllowedSemesterLevel(semPickerYear)
 
         // General semesters (Semester 1, 2, 3 — no department)
         const generalOptions = semesters
@@ -436,18 +490,20 @@ export function Classes() {
           .map(([label, id]) => ({ id, label, isDept: true }))
 
         // Combine: general first, then dept levels
-        const allOptions = [...generalOptions, ...deptOptions]
+        const allOptions = [...generalOptions, ...deptOptions].filter(option =>
+          new RegExp(`Semester\\s*${allowedLevel}(?:\\s|$)`, 'i').test(option.label)
+        )
 
         return (
           <div className="fixed inset-0 z-30 grid place-items-center bg-brand-950/45 p-4">
             <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
               <div className="mb-5 flex items-center justify-between">
-                <h2 className="text-xl font-bold text-brand-950">Set Semester — Class of {semPickerYear}</h2>
+                <h2 className="text-xl font-bold text-brand-950">Set Semester — Intake {semPickerYear}</h2>
                 <button type="button" onClick={() => { setSemPickerYear(null); setSemPickerChoice('') }} className="text-2xl text-slate-400 hover:text-slate-600">×</button>
               </div>
 
               <p className="mb-4 text-sm text-slate-500">
-                Select a semester to assign to all classes in Class of {semPickerYear}.
+                This intake is currently eligible for <b>Semester {allowedLevel}</b> only. The next semester becomes available automatically after six months.
               </p>
 
               {allOptions.length === 0 ? (
@@ -539,14 +595,14 @@ export function Classes() {
             </label>
             {academicYears.includes(Number(yearInput)) && (
               <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
-                Class of {yearInput} already exists.
+              Intake {yearInput} already exists.
               </div>
             )}
             <button
               disabled={academicYears.includes(Number(yearInput))}
               className="mt-4 w-full rounded-xl bg-brand-600 py-3 font-semibold text-white transition hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Create Class of {yearInput}
+              Create Intake {yearInput}
             </button>
           </form>
         </div>
@@ -572,7 +628,7 @@ export function Classes() {
                 </button>
               </div>
               <button onClick={() => setSelectedYear(year)} className="block w-full text-left">
-                <h2 className="mt-6 text-xl font-bold text-brand-950">Class of {year}</h2>
+                <h2 className="mt-6 text-xl font-bold text-brand-950">Intake {year}</h2>
                 <div className="mt-5 flex border-t border-slate-100 pt-4 text-sm">
                   <span className="flex-1 text-slate-500">
                     <b className="text-brand-950">{getDeptCount(year)}</b> dept{getDeptCount(year) !== 1 ? 's' : ''} · <b className="text-brand-950">{getYearClassCount(year)}</b> classes

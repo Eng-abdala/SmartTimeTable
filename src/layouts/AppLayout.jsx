@@ -99,13 +99,22 @@ export function AppLayout() {
     ['Dashboard', 'grid', '/'],
     ['Timetable', 'calendar', '/timetable'],
     ['Master Schedule', 'table', '/schedule'],
+    ['Reports', 'grid', '/reports'],
     ['Semesters', 'layers', '/semesters'],
     ['Classes', 'group', '/classes'],
     ['Lecturers', 'users', '/lecturers']
   ]
 
+  // Departments may each have the same level (for example Semester 4 CA/CN/CM).
+  // The dashboard counts that as one registered semester level, never more than 10.
+  const registeredSemesterLevels = new Set(
+    semesters
+      .map(({ name }) => Number(name?.match(/semester\s*(\d+)/i)?.[1]))
+      .filter(level => Number.isInteger(level) && level >= 1 && level <= 10)
+  )
+
   const metrics = [
-    ['Total Semesters', semesters.length, 'layers', 'bg-brand-600'],
+    ['Total Semesters', registeredSemesterLevels.size, 'layers', 'bg-brand-600'],
     ['Total Subjects', subjects.length, 'grid', 'bg-accent-400'],
     ['Total Lecturers', lecturers.length, 'users', 'bg-[#7b61c9]'],
     ['Total Classes', classes.length, 'group', 'bg-[#ef7f61]'],
@@ -226,7 +235,7 @@ export function AppLayout() {
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
           </div>
           <div>
-            <p className="text-sm font-bold leading-tight text-brand-950">Smart Timetable</p>
+            <p className="text-sm font-bold leading-tight text-brand-950">Just Timetable</p>
             <p className="text-[10px] text-slate-500">IT Faculty Portal</p>
           </div>
         </div>
@@ -240,32 +249,33 @@ export function AppLayout() {
         </button>
       </div>
       {mobileNavOpen && <button type="button" aria-label="Close navigation menu" onClick={() => setMobileNavOpen(false)} className="fixed inset-0 z-30 bg-slate-950/35 lg:hidden" />}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-brand-950 text-white shadow-2xl transition-transform duration-200 lg:translate-x-0 lg:shadow-none ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="flex items-center gap-3 px-6 py-7">
-          <div className="grid h-11 w-11 place-items-center overflow-hidden rounded-full bg-white p-0.5 shadow-lg">
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col bg-brand-950 text-white shadow-2xl transition-transform duration-200 lg:translate-x-0 lg:shadow-none ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex items-center gap-3 px-5 py-6">
+          <div className="grid h-10 w-10 place-items-center overflow-hidden rounded-xl bg-white p-0.5 shadow-lg">
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
           </div>
           <div>
-            <p className="text-lg font-bold tracking-tight">Smart Timetable</p>
-            <p className="text-xs text-cyan-100/70">IT Faculty Portal</p>
+            <p className="text-base font-bold tracking-tight">Just Timetable</p>
+            <p className="mt-0.5 text-[11px] text-cyan-100/65">IT Faculty Portal</p>
           </div>
           <button type="button" onClick={() => setMobileNavOpen(false)} className="ml-auto rounded-lg p-2 text-cyan-50/80 hover:bg-white/10 lg:hidden" aria-label="Close navigation menu">‹</button>
         </div>
-        <nav className="space-y-1 px-3 pb-5">
+        <nav className="space-y-1 px-2.5 pb-5">
           {nav.map(([label, icon, path]) => (
             <NavLink
               key={label}
               to={path}
-              className={({ isActive }) => `flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition ${isActive ? 'bg-brand-600 text-white shadow-lg shadow-black/10' : 'text-cyan-50/70 hover:bg-white/10 hover:text-white'}`}
+              className={({ isActive }) => `flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-[13px] font-semibold transition ${isActive ? 'bg-brand-600 text-white shadow-lg shadow-black/10' : 'text-cyan-50/70 hover:bg-white/10 hover:text-white'}`}
             >
               <Icon name={icon} />{label}
             </NavLink>
           ))}
         </nav>
-        <div className="mt-auto hidden border-t border-white/10 px-6 py-5 text-xs text-cyan-100/55 lg:block">© JUST 2026</div>
+        <div className="mt-auto border-t border-white/10 px-5 pt-4 text-[11px] text-cyan-100/50">© JUST 2026</div>
+        <button onClick={() => supabase.auth.signOut()} className="mx-3 mb-4 mt-3 inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-[13px] font-semibold text-cyan-50/80 transition hover:border-rose-300/40 hover:bg-rose-500/15 hover:text-white"><span className="text-base leading-none">↪</span> Log out</button>
       </aside>
 
-      <main className="min-w-0 flex-1 p-5 pt-20 sm:p-8 sm:pt-24 lg:ml-64 lg:p-8">
+      <main className="min-w-0 flex-1 p-5 pt-20 sm:p-8 sm:pt-24 lg:ml-60 lg:p-8">
         {location.pathname !== '/' && (
           <button
             onClick={() => navigate(-1)}

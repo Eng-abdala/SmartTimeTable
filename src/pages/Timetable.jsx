@@ -7,13 +7,18 @@ import { supabase } from '../lib/supabase'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 
-function createOverflowSelection(totalHours) {
+function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), minimumEarlyPeriods = 0) {
   const selection = Object.fromEntries(DAYS.map(day => [day, { early: false, afternoon_1: false, afternoon_2: false }]))
-  const extras = Math.max(0, totalHours - 20)
-  const defaultEarly = totalHours <= 23 ? extras : Math.max(0, totalHours - 22)
-  DAYS.slice(0, defaultEarly).forEach(day => { selection[day].early = true })
+  const extras = requiredPeriods
+  // An odd-hour subject needs one single period. Early-start days provide a
+  // usable single period alongside two 2-hour blocks, so reserve enough of
+  // them before choosing afternoon overflow periods.
+  const defaultEarly = Math.min(extras, Math.max(minimumEarlyPeriods, totalHours <= 23 ? extras : Math.max(0, totalHours - 22)))
+  // Put early-start slots later in the week. An odd subject's final 1-hour
+  // block then has an earlier day available for its preceding 2-hour block.
+  DAYS.slice(DAYS.length - defaultEarly).forEach(day => { selection[day].early = true })
   let remaining = extras - defaultEarly
-  let dayIndex = defaultEarly
+  let dayIndex = 0
   while (remaining > 0) {
     const day = DAYS[dayIndex % DAYS.length]
     selection[day].afternoon_1 = true
@@ -74,16 +79,44 @@ function getPhysicalSlotIndex(shift, session, daySessions = []) {
   return session?.slotIndex
 }
 
-function getSubjectDistributionErrors(grid, semesterSubjects) {
+function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning') {
   return semesterSubjects.flatMap(sub => {
-    const actual = DAYS
-      .map(day => (grid?.[day] || []).filter(session => session.subject?.id === sub.id).length)
-      .filter(Boolean)
-      .sort((a, b) => b - a)
+    const slotOrder = shift === 'Morning'
+      ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
+      : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+    const canMakeTwoHourBlock = (first, second) => {
+      if (shift === 'Morning') {
+        return (first === 4 && second === 0) ||
+          (first === 0 && second === 1) ||
+          (first === 2 && second === 3) ||
+          (first === 5 && second === 6)
+      }
+      return (first === 0 && second === 1) || (first === 1 && second === 2)
+    }
+
+    const blocksByDay = DAYS.map(day => {
+      const sessions = (grid?.[day] || [])
+        .filter(session => session.subject?.id === sub.id)
+        .sort((a, b) => (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex))
+      const blocks = []
+      for (let index = 0; index < sessions.length;) {
+        if (sessions[index + 1] && canMakeTwoHourBlock(sessions[index].slotIndex, sessions[index + 1].slotIndex)) {
+          blocks.push(2)
+          index += 2
+        } else {
+          blocks.push(1)
+          index += 1
+        }
+      }
+      return blocks
+    })
+    const actual = blocksByDay.flat().sort((a, b) => b - a)
     const requiredHours = (Number(sub.theory_hours) || 0) + (Number(sub.lab_hours) || 0)
     const expected = []
     for (let remaining = requiredHours; remaining > 0; remaining -= 2) expected.push(Math.min(2, remaining))
-    return actual.length === expected.length && actual.every((hours, index) => hours === expected[index])
+    return actual.length === expected.length &&
+      actual.every((hours, index) => hours === expected[index]) &&
+      blocksByDay.every(dayBlocks => dayBlocks.length <= 1)
       ? []
       : [{ subject: sub.name, expected }]
   })
@@ -195,15 +228,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   const timetable = {}
   DAYS.forEach(d => { timetable[d] = [] })
   const daySlotCount = { Saturday: 0, Sunday: 0, Monday: 0, Tuesday: 0, Wednesday: 0 }
-  // A subject may have only one block on a day. It prevents 2+2 blocks from
-  // becoming 4 periods on one day and ensures every remainder is on another day.
   const subjectBlocksByDay = {}
   const subjectHasBlockOnDay = (subjectId, day) => !!subjectBlocksByDay[subjectId]?.[day]
   const markSubjectBlockOnDay = (subjectId, day) => {
     if (!subjectBlocksByDay[subjectId]) subjectBlocksByDay[subjectId] = {}
     subjectBlocksByDay[subjectId][day] = true
   }
-
   const markLecturerSlot = (lid, day, slotIndex) => {
     if (!lecturerSlotMap[lid]) lecturerSlotMap[lid] = {}
     if (!lecturerSlotMap[lid][day]) lecturerSlotMap[lid][day] = {}
@@ -245,7 +275,10 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   // 5 = 1:00–2:00 PM, 6 = 2:00–3:00 PM. Keeping these IDs stable lets a
   // late period replace an unavailable 7:00 AM period without a clash.
   const daySlotsByDay = {}
-  if (totalPeriods >= 20) {
+  if (totalPeriods >= 20 || DAYS.some(day => {
+    const selected = overflowSelection?.[day] || {}
+    return selected.early || selected.afternoon_1 || selected.afternoon_2
+  })) {
     DAYS.forEach(day => {
       const selected = overflowSelection?.[day] || {}
       const slots = [...(selected.early ? [4] : []), 0, 1, 2, 3]
@@ -254,12 +287,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
       daySlotsByDay[day] = slots
     })
   } else {
-    // For < 20 hrs: distribute evenly across days
-    const base = Math.floor(totalPeriods / DAYS.length)
-    const rem = totalPeriods % DAYS.length
-    DAYS.forEach((day, idx) => {
-      const rotated = (idx + attemptSeed) % DAYS.length
-      daySlotsByDay[day] = Array.from({ length: base + (rotated < rem ? 1 : 0) }, (_, slotIndex) => slotIndex)
+    // Do not force a class with (for example) 18 hours into 4+4+4+3+3.
+    // Those two 3-period days make an all-even curriculum impossible to keep
+    // in 2-hour blocks. Every normal day offers its four standard slots and
+    // unused slots remain empty when the curriculum has fewer than 20 hours.
+    DAYS.forEach(day => {
+      daySlotsByDay[day] = [0, 1, 2, 3]
     })
   }
 
@@ -317,57 +350,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     } while (dayIdx !== startDayIdx)
 
     if (!placed) {
-      const assignedLecturer = block.lecturer
-      // Preserve the preference for intact two-period blocks when another
-      // generation attempt has a better placement option.
-      if (block.size > 1) layoutViolationCount++
-      let remainingSize = block.size
-      let searchDayIdx = dayIdx
-      while (remainingSize > 0) {
-        let piecePlaced = false
-        for (let dOffset = 0; dOffset < DAYS.length; dOffset++) {
-          const tryDayIdx = (searchDayIdx + dOffset) % DAYS.length
-          const day = DAYS[tryDayIdx]
-          if (subjectHasBlockOnDay(block.subject.id, day) || daySlotCount[day] >= getMaxSlots(day)) continue
-
-          const usableLecturer = findLecturerForBlock(
-            block.subject, day, daySlotCount[day], 1, assignedLecturer
-          )
-
-          const slotIndex = getDaySlots(day)[daySlotCount[day]]
-          // Only assign usableLecturer if they are 100% clash-free; otherwise assign null (Unassigned)
-          const sessionOffset = block.size - remainingSize
-          timetable[day].push({ slotIndex, slotKind: getSlotKind(slotIndex), subject: block.subject, type: block.sessionTypes?.[sessionOffset] || block.type, lecturer: usableLecturer || null })
-          if (usableLecturer) {
-            markLecturerSlot(usableLecturer.id, day, slotIndex)
-            if (!localDailyLoad[usableLecturer.id]) localDailyLoad[usableLecturer.id] = {}
-            localDailyLoad[usableLecturer.id][day] = (localDailyLoad[usableLecturer.id][day] || 0) + 1
-          } else {
-            emptyLecturerCount++
-          }
-          daySlotCount[day]++
-          markSubjectBlockOnDay(block.subject.id, day)
-          remainingSize--
-          piecePlaced = true
-          searchDayIdx = (tryDayIdx + 1) % DAYS.length
-          break
-        }
-        if (!piecePlaced) {
-          emptyLecturerCount++
-          const targetDay = [...DAYS]
-            .filter(day => !subjectHasBlockOnDay(block.subject.id, day))
-            .sort((a, b) => daySlotCount[a] - daySlotCount[b])[0]
-            // This can only occur when a subject exceeds the number of school days.
-            || [...DAYS].sort((a, b) => daySlotCount[a] - daySlotCount[b])[0]
-          const slotIndex = getDaySlots(targetDay)[daySlotCount[targetDay]]
-          const sessionOffset = block.size - remainingSize
-          timetable[targetDay].push({ slotIndex, slotKind: getSlotKind(slotIndex), subject: block.subject, type: block.sessionTypes?.[sessionOffset] || block.type, lecturer: null })
-          daySlotCount[targetDay]++
-          markSubjectBlockOnDay(block.subject.id, targetDay)
-          remainingSize--
-        }
-      }
-      placed = true
+      // Never split a two-period block into separate one-hour lessons.  An
+      // earlier fallback did exactly that when space was tight, producing
+      // invalid layouts such as 4 = 2+1+1.  This attempt is rejected instead;
+      // a later generation attempt can use a different placement order.
+      layoutViolationCount++
+      emptyLecturerCount += block.size
     }
   }
 
@@ -383,7 +371,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
   // Validate the exact day split requested for every subject. For example:
   // 3 hours = 2+1 across two days; 4 = 2+2 across two days; 5 = 2+2+1 across three days.
-  const distributionViolationCount = getSubjectDistributionErrors(timetable, semesterSubjects).length
+  const distributionViolationCount = getSubjectDistributionErrors(timetable, semesterSubjects, shift).length
 
   // Keep placement order and slot indexes intact. Reordering here would move
   // a lecturer into another time slot after conflicts have already been checked.
@@ -400,20 +388,149 @@ function getBlockingSlotIndex(currentShift, otherShift, otherSlotIndex) {
   return null
 }
 
-function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, initialWeeklyLoad, classCountMap, overflowSelection) {
-  let bestGrid = null
-  let minScore = Infinity
+// Exhaustive placement fallback. The earlier generator is fast, but greedy:
+// it can give up after choosing a poor early slot even though a valid full
+// timetable exists. This search keeps each subject's lecturer consistent and
+// only places complete 2-hour blocks (plus one final 1-hour block when needed).
+function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection) {
+  const totalPeriods = semesterSubjects.reduce((sum, subject) =>
+    sum + (Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0), 0)
 
+  const availableSlots = {}
+  if (totalPeriods >= 20 || DAYS.some(day => {
+    const selected = overflowSelection?.[day] || {}
+    return selected.early || selected.afternoon_1 || selected.afternoon_2
+  })) {
+    DAYS.forEach(day => {
+      const extra = overflowSelection?.[day] || {}
+      availableSlots[day] = [...(extra.early ? [4] : []), 0, 1, 2, 3, ...(extra.afternoon_1 ? [5] : []), ...(extra.afternoon_2 ? [6] : [])]
+    })
+  } else {
+    DAYS.forEach(day => { availableSlots[day] = [0, 1, 2, 3] })
+  }
+
+  const blocks = []
+  semesterSubjects.forEach(subject => {
+    const types = [
+      ...Array(Number(subject.theory_hours) || 0).fill('Theory'),
+      ...Array(Number(subject.lab_hours) || 0).fill('Lab'),
+    ]
+    while (types.length) {
+      const sessionTypes = types.splice(0, 2)
+      blocks.push({ subject, sessionTypes, type: sessionTypes[0], size: sessionTypes.length })
+    }
+  })
+  // Pair blocks first. This preserves space for every required 2-hour lesson.
+  blocks.sort((a, b) => b.size - a.size)
+
+  const slotOrder = shift === 'Morning'
+    ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
+    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+  const arePairable = (daySlots, first, second) => {
+    if (shift !== 'Morning') return (first === 0 && second === 1) || (first === 1 && second === 2)
+    // On an early-start day, 0+1 would strand the 7:00 AM slot and prevent
+    // the required final 1-hour lesson from fitting. Keep the two usable
+    // pairs as 4+0 and 2+3 instead.
+    if (daySlots.includes(4) && first === 0 && second === 1) return false
+    return (first === 4 && second === 0) || (first === 0 && second === 1) || (first === 2 && second === 3) || (first === 5 && second === 6)
+  }
+
+  const occupied = Object.fromEntries(DAYS.map(day => [day, new Set()]))
+  const lecturerSlots = {}
+  const lecturerLoad = {}
+  const assignedLecturer = new Map()
+  const subjectDays = new Map()
+  const earliestTheoryDay = new Map()
+  const timetable = Object.fromEntries(DAYS.map(day => [day, []]))
+  let searchedNodes = 0
+  // A 26-hour curriculum can contain 11 separate 2-hour blocks. It has many
+  // valid slot combinations, so the previous cap stopped the search before it
+  // reached a solution even when every lecturer was available.
+  const MAX_SEARCH_NODES = 2000000
+
+  const isFreeForLecturer = (lecturer, day, slots) =>
+    isLecturerAvailableOnDay(lecturer, day) && slots.every(slot =>
+      !busyMap?.[lecturer.id]?.[day]?.[slot] && !lecturerSlots[lecturer.id]?.[day]?.has(slot)
+    )
+
+  const getCandidates = block => {
+    const locked = assignedLecturer.get(block.subject.id)
+    if (locked) return [locked]
+    const availabilityField = shift === 'Morning' ? 'morning_available_hours' : 'afternoon_available_hours'
+    return (getSubjectLecturers(block.subject.id) || [])
+      .filter(lecturer => (Number(initialWeeklyLoad?.[lecturer.id]?.[shift] || 0) + (lecturerLoad[lecturer.id] || 0) + block.size) <= Number(lecturer[availabilityField] ?? 20))
+      .sort((a, b) => (lecturerLoad[a.id] || 0) - (lecturerLoad[b.id] || 0))
+  }
+
+  const search = index => {
+    if (index === blocks.length) return true
+    if (++searchedNodes > MAX_SEARCH_NODES) return false
+
+    const block = blocks[index]
+    const candidates = getCandidates(block)
+    for (const lecturer of candidates) {
+      const availabilityField = shift === 'Morning' ? 'morning_available_hours' : 'afternoon_available_hours'
+      if ((Number(initialWeeklyLoad?.[lecturer.id]?.[shift] || 0) + (lecturerLoad[lecturer.id] || 0) + block.size) > Number(lecturer[availabilityField] ?? 20)) continue
+      const wasLocked = assignedLecturer.has(block.subject.id)
+      if (!wasLocked) assignedLecturer.set(block.subject.id, lecturer)
+
+      for (const day of DAYS) {
+        if (subjectDays.get(block.subject.id)?.has(day)) continue
+        if (block.type === 'Lab' && earliestTheoryDay.has(block.subject.id) && DAYS.indexOf(day) < earliestTheoryDay.get(block.subject.id)) continue
+        const daySlots = availableSlots[day]
+        for (let start = 0; start <= daySlots.length - block.size; start++) {
+          const slots = daySlots.slice(start, start + block.size)
+          if (slots.some(slot => occupied[day].has(slot))) continue
+          if (block.size === 2 && !arePairable(daySlots, slots[0], slots[1])) continue
+          if (!isFreeForLecturer(lecturer, day, slots)) continue
+
+          const oldTheoryDay = earliestTheoryDay.get(block.subject.id)
+          if (!subjectDays.has(block.subject.id)) subjectDays.set(block.subject.id, new Set())
+          subjectDays.get(block.subject.id).add(day)
+          if (block.type === 'Theory') {
+            earliestTheoryDay.set(block.subject.id, Math.min(oldTheoryDay ?? DAYS.indexOf(day), DAYS.indexOf(day)))
+          }
+          slots.forEach((slot, slotIndex) => {
+            occupied[day].add(slot)
+            if (!lecturerSlots[lecturer.id]) lecturerSlots[lecturer.id] = {}
+            if (!lecturerSlots[lecturer.id][day]) lecturerSlots[lecturer.id][day] = new Set()
+            lecturerSlots[lecturer.id][day].add(slot)
+            timetable[day].push({ slotIndex: slot, slotKind: ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slot] || 'standard'), subject: block.subject, type: block.sessionTypes[slotIndex], lecturer })
+          })
+          lecturerLoad[lecturer.id] = (lecturerLoad[lecturer.id] || 0) + block.size
+
+          if (search(index + 1)) return true
+
+          lecturerLoad[lecturer.id] -= block.size
+          slots.forEach(slot => {
+            occupied[day].delete(slot)
+            lecturerSlots[lecturer.id][day].delete(slot)
+          })
+          timetable[day].splice(-block.size, block.size)
+          subjectDays.get(block.subject.id).delete(day)
+          if (subjectDays.get(block.subject.id).size === 0) subjectDays.delete(block.subject.id)
+          if (block.type === 'Theory') {
+            if (oldTheoryDay === undefined) earliestTheoryDay.delete(block.subject.id)
+            else earliestTheoryDay.set(block.subject.id, oldTheoryDay)
+          }
+        }
+      }
+      if (!wasLocked) assignedLecturer.delete(block.subject.id)
+    }
+    return false
+  }
+
+  if (!search(0)) return null
+  DAYS.forEach(day => timetable[day].sort((a, b) => (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex)))
+  return timetable
+}
+
+function generateTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, initialWeeklyLoad, classCountMap, overflowSelection) {
   for (let attempt = 0; attempt < 50; attempt++) {
     const res = generateSinglePassTimetable(semesterSubjects, lecturers, shift, selectedClassId, getRandomLecturerForClass, getSubjectLecturers, busyMap, initialDailyLoad, initialWeeklyLoad, classCountMap, overflowSelection, attempt)
-    const score = (res.clashCount * 10000) + (res.emptyLecturerCount * 100) + (res.distributionViolationCount * 10) + res.layoutViolationCount
     if (res.clashCount === 0 && res.emptyLecturerCount === 0 && res.layoutViolationCount === 0 && res.distributionViolationCount === 0) return res.timetable
-    if (score < minScore) {
-      minScore = score
-      bestGrid = res.timetable
-    }
   }
-  return bestGrid
+  return generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, busyMap, initialWeeklyLoad, overflowSelection)
 }
 
 export function Timetable() {
@@ -508,7 +625,18 @@ export function Timetable() {
   const curriculumHours = semesterSubjects.reduce(
     (total, subject) => total + (Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0), 0
   )
-  const requiredOverflowPeriods = Math.max(0, curriculumHours - 20)
+  const oddSubjectCount = semesterSubjects.filter(subject =>
+    ((Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0)) % 2 === 1
+  ).length
+  // A normal 4-period day can hold one final 1-hour block only by leaving one
+  // slot empty. Early-start days avoid that loss. This calculates the minimum
+  // extra capacity needed, rather than incorrectly requiring one extra slot
+  // for every odd-hour subject (22 hours with four odd subjects needs 3, not 4).
+  const requiredOverflowPeriods = Math.max(
+    0,
+    curriculumHours - 20,
+    Math.ceil((curriculumHours - 20 + oddSubjectCount) / 2),
+  )
   const selectedOverflowPeriods = DAYS.reduce((total, day) => total + [
     overflowSelection[day]?.early,
     overflowSelection[day]?.afternoon_1,
@@ -516,8 +644,8 @@ export function Timetable() {
   ].filter(Boolean).length, 0)
 
   useEffect(() => {
-    setOverflowSelection(createOverflowSelection(curriculumHours))
-  }, [curriculumHours])
+    setOverflowSelection(createOverflowSelection(curriculumHours, requiredOverflowPeriods, oddSubjectCount))
+  }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount])
 
   // Load global busy map for other classes
   const loadGlobalBusyMap = useCallback(async (currentClassId, currentShift) => {
@@ -621,8 +749,8 @@ export function Timetable() {
       setNotice(`${selectedClass.name} already has a saved timetable. Delete it first if you need to create a replacement.`, 'error')
       return
     }
-    if (selectedClass.shift === 'Morning' && selectedOverflowPeriods !== requiredOverflowPeriods) {
-      setNotice(`Choose exactly ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} for this ${curriculumHours}-hour curriculum.`, 'error')
+    if (selectedClass.shift === 'Morning' && selectedOverflowPeriods < requiredOverflowPeriods) {
+      setNotice(`Choose at least ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} so the 2-hour and final 1-hour subject blocks fit correctly.`, 'error')
       return
     }
 
@@ -690,6 +818,10 @@ export function Timetable() {
       semesterSubjects, lecturers, selectedClass.shift,
       selectedClass.id, getRandomLecturerForClass, getSubjectLecturers, busyMap, dailyLoad, weeklyLoad, classCountMap, overflowSelection
     )
+    if (!grid) {
+      setNotice('Could not create a valid timetable while keeping every subject in 2-hour blocks (with only one final 1-hour block for odd totals). Check lecturer availability or generate after adjusting the class schedule.', 'error')
+      return
+    }
     setGlobalBusyMap(busyMap)
     setTimetable(grid)
     setGenerated(true)
@@ -737,7 +869,7 @@ export function Timetable() {
 
     if (unassignedSessions.length) return `Cannot save: ${unassignedSessions[0]} has no lecturer.`
     if (invalidSessions.length) return `Cannot save: ${invalidSessions[0]}.`
-    const distributionErrors = getSubjectDistributionErrors(currentGrid, semesterSubjects)
+    const distributionErrors = getSubjectDistributionErrors(currentGrid, semesterSubjects, selectedClass?.shift || 'Morning')
     if (distributionErrors.length) {
       const { subject, expected } = distributionErrors[0]
       return `Cannot save: ${subject} must be split across different days as ${expected.join('+')}.`
@@ -1300,10 +1432,10 @@ export function Timetable() {
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
                     <p className="text-sm font-bold text-brand-950">Choose overflow periods</p>
-                    <p className="mt-0.5 text-xs text-slate-600">Select exactly the extra periods required by the curriculum. You can mix 7:00 AM and 1:00–3:00 PM.</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Select at least the minimum extra periods. They include space for final 1-hour blocks in odd-hour subjects. You can mix 7:00 AM and 1:00–3:00 PM.</p>
                   </div>
-                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${selectedOverflowPeriods === requiredOverflowPeriods ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                    {selectedOverflowPeriods} / {requiredOverflowPeriods}
+                  <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${selectedOverflowPeriods >= requiredOverflowPeriods ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {selectedOverflowPeriods} / min {requiredOverflowPeriods}
                   </span>
                 </div>
                 <div className="space-y-2">
@@ -1317,13 +1449,12 @@ export function Timetable() {
                       ].map(([period, label]) => {
                         const checked = !!overflowSelection[day]?.[period]
                         const needsFirstAfternoon = period === 'afternoon_2' && !overflowSelection[day]?.afternoon_1
-                        const limitReached = !checked && selectedOverflowPeriods >= requiredOverflowPeriods
                         return (
                           <label key={period} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-slate-700">
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={needsFirstAfternoon || limitReached}
+                              disabled={needsFirstAfternoon}
                               onChange={event => setOverflowSelection(current => ({
                                 ...current,
                                 [day]: {

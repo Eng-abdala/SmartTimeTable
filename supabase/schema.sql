@@ -183,18 +183,18 @@ drop policy if exists "Phase 1 class access" on public.classes;
 drop policy if exists "Phase 1 subject lecturers access" on public.subject_lecturers;
 drop policy if exists "Phase 1 semester lecturers access" on public.semester_lecturers;
 
-create policy "Phase 1 semester access" on public.semesters for all to anon using (true) with check (true);
-create policy "Phase 1 subject access" on public.subjects for all to anon using (true) with check (true);
-create policy "Phase 1 lecturer access" on public.lecturers for all to anon using (true) with check (true);
-create policy "Phase 1 class access" on public.classes for all to anon using (true) with check (true);
+create policy "Phase 1 semester access" on public.semesters for all to authenticated using (true) with check (true);
+create policy "Phase 1 subject access" on public.subjects for all to authenticated using (true) with check (true);
+create policy "Phase 1 lecturer access" on public.lecturers for all to authenticated using (true) with check (true);
+create policy "Phase 1 class access" on public.classes for all to authenticated using (true) with check (true);
 drop policy if exists "Phase 1 academic year access" on public.academic_years;
 drop policy if exists "Phase 1 department access" on public.departments;
-create policy "Phase 1 academic year access" on public.academic_years for all to anon using (true) with check (true);
-create policy "Phase 1 department access" on public.departments for all to anon using (true) with check (true);
+create policy "Phase 1 academic year access" on public.academic_years for all to authenticated using (true) with check (true);
+create policy "Phase 1 department access" on public.departments for all to authenticated using (true) with check (true);
 drop policy if exists "Phase 1 department catalog access" on public.department_catalog;
-create policy "Phase 1 department catalog access" on public.department_catalog for all to anon using (true) with check (true);
-create policy "Phase 1 subject lecturers access" on public.subject_lecturers for all to anon using (true) with check (true);
-create policy "Phase 1 semester lecturers access" on public.semester_lecturers for all to anon using (true) with check (true);
+create policy "Phase 1 department catalog access" on public.department_catalog for all to authenticated using (true) with check (true);
+create policy "Phase 1 subject lecturers access" on public.subject_lecturers for all to authenticated using (true) with check (true);
+create policy "Phase 1 semester lecturers access" on public.semester_lecturers for all to authenticated using (true) with check (true);
 
 create table if not exists public.timetable_slots (
   id uuid primary key default gen_random_uuid(),
@@ -209,7 +209,7 @@ create table if not exists public.timetable_slots (
 
 alter table public.timetable_slots enable row level security;
 drop policy if exists "Phase 1 timetable access" on public.timetable_slots;
-create policy "Phase 1 timetable access" on public.timetable_slots for all to anon using (true) with check (true);
+create policy "Phase 1 timetable access" on public.timetable_slots for all to authenticated using (true) with check (true);
 
 -- Protect curriculum and department records from accidental deletion.
 create or replace function public.prevent_used_semester_delete()

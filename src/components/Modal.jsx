@@ -171,8 +171,14 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
         return
       }
 
-      dbPayload.name = `Semester ${match[1]}`
-      const isHigh = parseInt(match[1], 10) >= 4
+      const semesterLevel = Number(match[1])
+      if (!Number.isInteger(semesterLevel) || semesterLevel < 1 || semesterLevel > 10) {
+        setFormError('Semester number must be between 1 and 10.')
+        return
+      }
+
+      dbPayload.name = `Semester ${semesterLevel}`
+      const isHigh = semesterLevel >= 4
       if (!isHigh) {
         delete dbPayload.department
       } else if (!dbPayload.department) {

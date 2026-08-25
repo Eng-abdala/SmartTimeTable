@@ -122,9 +122,21 @@ export function Schedule() {
 
   const [activeTab, setActiveTab] = useState('classes') // 'classes' | 'lecturers'
   // Use academic year instead of single semester — shows all depts together
-  const [selectedYear, setSelectedYear] = useState(() => {
-    const years = [...(academicYears || [])].sort((a, b) => b - a)
-    return years[0] || ''
+  const semesterLevels = useMemo(() => {
+    const levels = new Set()
+    semesters?.forEach(sem => {
+      const baseName = sem.name.replace(/\s*\(.*?\)/, '').trim()
+      levels.add(baseName)
+    })
+    return Array.from(levels).sort((a, b) => {
+       const numA = parseInt(a.match(/\d+/)?.[0] || '0', 10)
+       const numB = parseInt(b.match(/\d+/)?.[0] || '0', 10)
+       return numA - numB || a.localeCompare(b)
+    })
+  }, [semesters])
+
+  const [selectedSemesterLevel, setSelectedSemesterLevel] = useState(() => {
+    return semesterLevels[0] || ''
   })
   const [selectedShift, setSelectedShift] = useState('All') // 'All', 'Morning', 'Afternoon'
   const [selectedLecturerId, setSelectedLecturerId] = useState('All') // 'All' or specific lecturer id
@@ -132,10 +144,10 @@ export function Schedule() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!selectedYear && academicYears?.length > 0) {
-      setSelectedYear([...academicYears].sort((a, b) => b - a)[0])
+    if (!selectedSemesterLevel && semesterLevels.length > 0) {
+      setSelectedSemesterLevel(semesterLevels[0])
     }
-  }, [academicYears, selectedYear])
+  }, [semesterLevels, selectedSemesterLevel])
 
   // Fetch timetables directly from Supabase DB
   const loadTimetables = async () => {
@@ -155,16 +167,19 @@ export function Schedule() {
 
   useEffect(() => {
     loadTimetables()
-  }, [selectedYear])
+  }, [selectedSemesterLevel])
 
-  // Filter classes by academic YEAR (includes ALL departments: CA, CM, CN) & shift
+  // Filter classes by semester level & shift
   const semesterClasses = useMemo(() => {
-    if (!selectedYear) return []
+    if (!selectedSemesterLevel) return []
+    const matchingSemesterIds = semesters
+      .filter(sem => sem.name.replace(/\s*\(.*?\)/, '').trim() === selectedSemesterLevel)
+      .map(sem => sem.id)
     return classes
-      .filter(c => c.intake_year === Number(selectedYear))
+      .filter(c => matchingSemesterIds.includes(c.semester_id))
       .filter(c => selectedShift === 'All' || c.shift === selectedShift)
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
-  }, [classes, selectedYear, selectedShift])
+  }, [classes, selectedSemesterLevel, selectedShift, semesters])
 
   const morningClasses = useMemo(() => semesterClasses.filter(c => c.shift === 'Morning'), [semesterClasses])
   const afternoonClasses = useMemo(() => semesterClasses.filter(c => c.shift === 'Afternoon'), [semesterClasses])
@@ -177,6 +192,39 @@ export function Schedule() {
     })
     return map
   }, [timetablesData])
+
+  // Used only for an individual lecturer report. Unlike the master table,
+  // this deliberately includes every saved class from every semester.
+  const allLecturerSessions = useMemo(() => {
+    const map = {}
+    const classesById = Object.fromEntries(classes.map(cls => [cls.id, cls]))
+    timetablesData.forEach(row => {
+      const cls = classesById[row.class_id]
+      if (!cls) return
+      DAYS.forEach(day => {
+        ;(row.grid?.[day] || []).forEach(session => {
+          const lecturerId = session?.lecturer?.id
+          if (!lecturerId) return
+          if (!map[lecturerId]) map[lecturerId] = Object.fromEntries(DAYS.map(name => [name, []]))
+          map[lecturerId][day].push({
+            classObj: cls,
+            subject: session.subject,
+            type: session.type,
+            slotIndex: session.slotIndex,
+            slotKind: session.slotKind,
+            timeLabel: getSlotTimeLabel(cls.shift || 'Morning', session.slotIndex, session.slotKind),
+          })
+        })
+      })
+    })
+    DAYS.forEach(day => Object.values(map).forEach(byDay => byDay[day].sort((a, b) => a.timeLabel.localeCompare(b.timeLabel))))
+    return map
+  }, [classes, timetablesData])
+
+  const allScheduledLecturers = useMemo(() => {
+    const ids = new Set(Object.keys(allLecturerSessions))
+    return lecturers.filter(lecturer => ids.has(lecturer.id)).sort((a, b) => a.name.localeCompare(b.name))
+  }, [allLecturerSessions, lecturers])
 
   // Map lecturerId -> day -> `${shift}_${slotIndex}` -> array of { classObj, subject, type, slotIndex }
   const lecturerScheduleMap = useMemo(() => {
@@ -211,7 +259,7 @@ export function Schedule() {
     })
 
     return map
-  }, [semesterClasses, timetablesByClass])
+  }, [semesterClasses, classes, activeTab, timetablesByClass])
 
   // Active lecturers who have assignments in this semester / shift
   const activeLecturers = useMemo(() => {
@@ -337,7 +385,7 @@ export function Schedule() {
     })
 
     return { clashList, clashCellKeys }
-  }, [semesterClasses, timetablesByClass])
+  }, [semesterClasses, classes, activeTab, timetablesByClass])
 
   const handlePrint = () => window.print()
 
@@ -706,146 +754,18 @@ export function Schedule() {
   // Renders individual schedule for a single lecturer.
   const renderSingleLecturerSchedule = (lec) => {
     if (!lec) return null
-
-    let totalPeriods = 0
-    const classesTaughtSet = new Set()
-    
-    DAYS.forEach(day => {
-      const dayMap = lecturerScheduleMap[lec.id]?.[day]
-      if (dayMap) {
-        Object.values(dayMap).forEach(sessions => {
-          totalPeriods += sessions.length
-          sessions.forEach(s => classesTaughtSet.add(s.classObj.name))
-        })
-      }
-    })
-
-    const shiftsToRender = selectedShift === 'All' ? ['Morning', 'Afternoon'] : [selectedShift]
+    const sessionsByDay = allLecturerSessions[lec.id] || Object.fromEntries(DAYS.map(day => [day, []]))
+    const totalPeriods = DAYS.reduce((total, day) => total + sessionsByDay[day].length, 0)
 
     return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-          <div className="flex items-center gap-4">
-            <div className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-600 text-white font-bold text-lg shadow-md shadow-brand-600/20">
-              {lec.name.charAt(0)}
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold text-brand-950">{lec.name}</h2>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600">
-                  {lec.lecturer_id || 'Lecturer'}
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Availability: {lec.is_all_week ? 'Available all week' : (lec.available_days || []).join(', ')}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-6 text-sm">
-            <div className="text-center">
-              <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Scheduled Periods</span>
-              <span className="text-lg font-bold text-brand-600">{totalPeriods} / week</span>
-            </div>
-            <div className="h-8 w-px bg-slate-200"></div>
-            <div className="text-center">
-              <span className="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Classes Taught</span>
-              <span className="text-lg font-bold text-slate-800">
-                {classesTaughtSet.size > 0 ? Array.from(classesTaughtSet).join(', ') : 'None'}
-              </span>
-            </div>
-            <button
-              onClick={() => setSelectedLecturerId('All')}
-              className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition"
-            >
-              ← Back to All Lecturers
-            </button>
-          </div>
+      <div className="rounded-xl border border-black bg-white p-5 text-black shadow-xs sm:p-8" style={{ fontFamily: "'Times New Roman', Times, serif" }}>
+        <div className="mb-5 flex justify-between font-sans">
+          <button onClick={() => setSelectedLecturerId('All')} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700">← Back to All Lecturers</button>
+          <span className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">All semesters · {totalPeriods} periods</span>
         </div>
-
-        {shiftsToRender.map(shiftName => {
-          const slotsToUse = shiftName === 'Afternoon' ? AFTERNOON_SLOTS : MORNING_STANDARD_SLOTS
-          return (
-            <div key={shiftName} className="space-y-2">
-              <div className="flex items-center gap-2 font-bold text-slate-800 text-sm">
-                <span className={`h-2.5 w-2.5 rounded-full ${shiftName === 'Morning' ? 'bg-amber-500' : 'bg-indigo-600'}`}></span>
-                {shiftName} Shift Schedule
-              </div>
-              <div className="overflow-x-auto rounded-xl border border-black bg-white shadow-xs">
-                <table className="w-full min-w-[700px] border-collapse text-center text-xs">
-                  <thead>
-                    <tr className="border-b border-black bg-[#ffff00]">
-                      <th className="border-r border-black px-4 py-3 text-center font-bold text-black w-36">Time</th>
-                      {DAYS.map(day => (
-                        <th key={day} className="border-r border-black px-4 py-3 text-center font-bold text-black">
-                          {day}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black bg-white">
-                    {slotsToUse.map(slot => {
-                      if (slot.isBreak) {
-                        return (
-                          <tr key={slot.time} className="border-b border-black bg-amber-50">
-                            <td className="border-r border-black px-3 py-2 font-medium text-slate-900 whitespace-nowrap">{slot.time}</td>
-                            <td colSpan={DAYS.length} className="px-3 py-2 text-center text-amber-900 font-semibold">☕ Break</td>
-                          </tr>
-                        )
-                      }
-
-                      return (
-                        <tr key={slot.time} className="border-b border-black">
-                          <td className="border-r border-black bg-white px-3 py-2.5 font-medium text-slate-900 whitespace-nowrap text-xs">
-                            {slot.time}
-                          </td>
-                          {DAYS.map(day => {
-                            const key = `${shiftName}_${slot.slotIndex}`
-                            const sessions = lecturerScheduleMap[lec.id]?.[day]?.[key] || []
-
-                            if (sessions.length === 0) {
-                              return (
-                                <td key={day} className="border-r border-black px-3 py-2.5 text-center text-slate-300 italic">
-                                  —
-                                </td>
-                              )
-                            }
-
-                            if (sessions.length === 1) {
-                              const session = sessions[0]
-                              const style = getSubjectStyle(session.subject?.id)
-                              return (
-                                <td
-                                  key={day}
-                                  style={{ backgroundColor: style.bg, color: style.text }}
-                                  className="border-r border-black px-3 py-2.5 text-center align-middle font-medium text-xs"
-                                >
-                                  <div className="font-bold">{session.classObj.name}</div>
-                                  <div className="text-[11px] opacity-90">{session.subject?.name || 'Subject'}</div>
-                                </td>
-                              )
-                            }
-
-                            return (
-                              <td
-                                key={day}
-                                style={{ backgroundColor: '#fee2e2', color: '#991b1b' }}
-                                className="border-r border-black px-3 py-2.5 text-center align-middle font-bold text-xs ring-2 ring-red-500"
-                              >
-                                <div>{sessions.map(s => `${s.classObj.name} (${s.subject?.code || s.subject?.name})`).join(', ')}</div>
-                                <div className="mt-1 text-[9px] font-bold text-red-700 uppercase">⚠️ Clash</div>
-                              </td>
-                            )
-                          })}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )
-        })}
+        <h2 className="mb-5 text-center text-lg font-bold sm:text-xl">Lecturer Period: {lec.lecturer_id || 'Lecturer'} - {lec.name}</h2>
+        <div className="overflow-x-auto"><table className="w-full min-w-[650px] border-collapse text-left text-sm"><thead><tr><th className="border border-black px-3 py-2 text-center">Class</th><th className="border border-black px-3 py-2 text-center">Course</th><th className="border border-black px-3 py-2 text-center">Time</th><th className="border border-black px-3 py-2 text-center">Type</th></tr></thead><tbody>{DAYS.map(day => sessionsByDay[day].length ? <React.Fragment key={day}><tr><td colSpan={4} className="border border-black bg-[#d9eef9] px-3 py-1.5 text-center font-bold">{day}</td></tr>{sessionsByDay[day].map((session, index) => <tr key={`${day}-${session.classObj.id}-${index}`}><td className="border border-black px-3 py-1.5 font-semibold">{session.classObj.name}</td><td className="border border-black px-3 py-1.5">{session.subject?.name || 'Subject'}</td><td className="border border-black px-3 py-1.5 text-center whitespace-nowrap">{session.timeLabel}</td><td className="border border-black px-3 py-1.5 text-center">{session.type || '—'}</td></tr>)}</React.Fragment> : null)}</tbody></table></div>
+        <p className="mt-1 text-center text-sm font-bold">Total Periods: {totalPeriods}</p>
       </div>
     )
   }
@@ -926,36 +846,40 @@ export function Schedule() {
       {/* Filter Bar */}
       <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
         <div className="flex flex-wrap items-center gap-6">
-          <div className="flex items-center gap-3">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Academic Year:
-            </label>
-            <select
-              value={selectedYear}
-              onChange={e => setSelectedYear(Number(e.target.value))}
-              className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
-            >
-              {!(academicYears?.length) && <option value="">No Years</option>}
-              {[...(academicYears || [])].sort((a, b) => b - a).map(yr => (
-                <option key={yr} value={yr}>Class of {yr}</option>
-              ))}
-            </select>
-          </div>
+          {activeTab === 'classes' && (
+            <>
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Semesters:
+                </label>
+                <select
+                  value={selectedSemesterLevel}
+                  onChange={e => setSelectedSemesterLevel(e.target.value)}
+                  className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
+                >
+                  {!(semesterLevels.length) && <option value="">No Semesters</option>}
+                  {semesterLevels.map(level => (
+                    <option key={level} value={level}>{level}</option>
+                  ))}
+                </select>
+              </div>
 
-          <div className="flex items-center gap-3">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Shift:
-            </label>
-            <select
-              value={selectedShift}
-              onChange={e => setSelectedShift(e.target.value)}
-              className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
-            >
-              <option value="All">All Shifts</option>
-              <option value="Morning">Morning Shift</option>
-              <option value="Afternoon">Afternoon Shift</option>
-            </select>
-          </div>
+              <div className="flex items-center gap-3">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Shift:
+                </label>
+                <select
+                  value={selectedShift}
+                  onChange={e => setSelectedShift(e.target.value)}
+                  className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
+                >
+                  <option value="All">All Shifts</option>
+                  <option value="Morning">Morning Shift</option>
+                  <option value="Afternoon">Afternoon Shift</option>
+                </select>
+              </div>
+            </>
+          )}
 
           {activeTab === 'lecturers' && (
             <div className="flex items-center gap-3">
@@ -968,7 +892,7 @@ export function Schedule() {
                 className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
               >
                 <option value="All">All Lecturers (Table View)</option>
-                {activeLecturers.map(l => (
+                {allScheduledLecturers.map(l => (
                   <option key={l.id} value={l.id}>{l.name}</option>
                 ))}
               </select>
