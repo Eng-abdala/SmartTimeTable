@@ -22,7 +22,9 @@ export function AppLayout() {
 
   useEffect(() => {
     if (notice) {
-      const timer = setTimeout(() => setNotice(null), 3000)
+      // Errors need enough time to read the affected subject names.
+      const timeout = notice.type === 'error' ? 12000 : notice.type === 'warning' ? 7000 : 3000
+      const timer = setTimeout(() => setNotice(null), timeout)
       return () => clearTimeout(timer)
     }
   }, [notice])
@@ -286,16 +288,26 @@ export function AppLayout() {
         )}
 
         {notice && (
-          <div className={`mb-5 flex items-center justify-between rounded-xl border px-4 py-3 text-sm font-medium ${
-            notice.type === 'error'
-              ? 'border-rose-300 bg-rose-50 text-rose-800'
-              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
-          }`}>
-            <div className="flex items-center gap-2">
-              <span className="text-base">{notice.type === 'error' ? '⚠' : '✓'}</span>
-              <span>{notice.msg}</span>
+          <div
+            role="alert"
+            className={`fixed right-4 top-4 z-50 flex w-[calc(100%-2rem)] max-w-2xl items-start justify-between gap-4 rounded-2xl border p-5 shadow-2xl sm:right-6 sm:top-6 sm:w-full ${
+              notice.type === 'error'
+                ? 'border-rose-300 bg-gradient-to-r from-rose-50 to-white text-rose-950 shadow-rose-100/80'
+                : notice.type === 'warning'
+                  ? 'border-amber-300 bg-amber-50 text-amber-950 shadow-amber-100/80'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-950 shadow-emerald-100/80'
+            }`}
+          >
+            <div className="flex min-w-0 items-start gap-4">
+              <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-xl font-black ${
+                notice.type === 'error' ? 'bg-rose-600 text-white' : notice.type === 'warning' ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white'
+              }`}>{notice.type === 'error' ? '!' : notice.type === 'warning' ? '!' : '✓'}</span>
+              <div className="pt-0.5">
+                <p className="text-base font-extrabold">{notice.type === 'error' ? 'Timetable cannot be generated' : notice.type === 'warning' ? 'Please review the timetable' : 'Completed successfully'}</p>
+                <p className="mt-1 text-sm font-medium leading-6">{notice.msg}</p>
+              </div>
             </div>
-            <button onClick={() => setNotice(null)} className="ml-4 rounded p-1 text-lg leading-none opacity-60 hover:opacity-100">×</button>
+            <button aria-label="Close alert" onClick={() => setNotice(null)} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-xl leading-none opacity-60 transition hover:bg-black/5 hover:opacity-100">×</button>
           </div>
         )}
 

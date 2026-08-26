@@ -819,6 +819,9 @@ export function Timetable() {
       return
     }
 
+    // Show feedback immediately, while the saved schedules are being checked.
+    setNotice('Checking lecturer availability and timetable conflicts…', 'warning')
+
     // Ensure all subjects have at least one lecturer assigned
     const unassignedSubjects = semesterSubjects.filter(sub => {
       const assigned = getSubjectLecturers(sub.id)
@@ -827,7 +830,7 @@ export function Timetable() {
 
     if (unassignedSubjects.length > 0) {
       const names = unassignedSubjects.map(s => s.name).join(', ')
-      setNotice(`Cannot generate timetable. The following subjects have no assigned lecturer: ${names}`)
+      setNotice(`Cannot generate timetable. The following subjects have no assigned lecturer: ${names}`, 'error')
       return
     }
 
@@ -877,6 +880,38 @@ export function Timetable() {
           })
         }
       })
+    }
+
+    // Report the exact subject before the generator starts. This prevents a
+    // generic generation error when every qualified lecturer has no free day
+    // or no remaining hours in the selected shift.
+    const unavailableSubjects = semesterSubjects.filter(subject => {
+      const requiredHours = (Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0)
+      const requiredTwoHourBlocks = Math.floor(requiredHours / 2)
+      const needsFinalOneHourBlock = requiredHours % 2 === 1
+      const availabilityField = selectedClass.shift === 'Morning'
+        ? 'morning_available_hours'
+        : 'afternoon_available_hours'
+
+      return !(getSubjectLecturers(subject.id) || []).some(lecturer => {
+        const usedHours = Number(weeklyLoad[lecturer.id]?.[selectedClass.shift] || 0)
+        if (Number(lecturer[availabilityField] ?? 20) - usedHours < requiredHours) return false
+
+        const freeSlotsByDay = DAYS.map(day => {
+          if (!isLecturerAvailableOnDay(lecturer, day)) return 0
+          return [0, 1, 2, 3].filter(slot => !busyMap[lecturer.id]?.[day]?.[slot]).length
+        })
+        const daysForTwoHourBlocks = freeSlotsByDay.filter(slots => slots >= 2).length
+        const daysForOneHourBlocks = freeSlotsByDay.filter(slots => slots >= 1).length
+        return daysForTwoHourBlocks >= requiredTwoHourBlocks &&
+          daysForOneHourBlocks >= requiredTwoHourBlocks + Number(needsFinalOneHourBlock)
+      })
+    })
+
+    if (unavailableSubjects.length > 0) {
+      const names = unavailableSubjects.map(subject => subject.name).join(', ')
+      setNotice(`Cannot generate timetable. No lecturer is available for: ${names}. Add an available teaching day or increase that lecturer's ${selectedClass.shift.toLowerCase()} hours.`, 'error')
+      return
     }
 
     const generation = generateTimetable(
