@@ -3,6 +3,7 @@ import { Field } from './Field'
 import { getYearSemesterMap } from '../lib/semesterUtils'
 
 const days = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
+const HOURS_PER_SHIFT_PER_DAY = 4
 const SEMESTER_NAME_PATTERN = /^semester\s*(\d+)$/i
 const LECTURER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,7}$/
 const LECTURER_NAME_PATTERN = /^[A-Za-z ]+$/
@@ -67,6 +68,9 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
   // Unique list of subjects from curriculum
   const availableSubjectNames = Array.from(new Set((subjects || []).map(s => s.name).filter(Boolean)))
 
+  const availabilityHoursFor = (isAllWeek, availableDays) =>
+    (isAllWeek ? days.length : availableDays.length) * HOURS_PER_SHIFT_PER_DAY
+
   const change = (key, value) => {
     if (key === 'lecturer_id') setFormError('')
     if (key === 'name' && type === 'class') {
@@ -83,6 +87,30 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
         }
       }
     }
+    if (type === 'lecturer' && (key === 'is_all_week' || key === 'available_days')) {
+      setForm((current) => {
+        const next = { ...current, [key]: value }
+        const maximum = availabilityHoursFor(next.is_all_week, next.available_days || [])
+
+        // Reducing the selected days also reduces the weekly capacity.
+        // Keep any entered value only while it still fits the new capacity.
+        return {
+          ...next,
+          morning_available_hours: Math.min(Number(next.morning_available_hours) || 0, maximum),
+          afternoon_available_hours: Math.min(Number(next.afternoon_available_hours) || 0, maximum),
+        }
+      })
+      return
+    }
+
+    if (type === 'lecturer' && (key === 'morning_available_hours' || key === 'afternoon_available_hours')) {
+      setForm((current) => ({
+        ...current,
+        [key]: Math.min(Number(value) || 0, availabilityHoursFor(current.is_all_week, current.available_days || [])),
+      }))
+      return
+    }
+
     setForm((current) => ({ ...current, [key]: value }))
   }
   
@@ -144,6 +172,7 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
       const lecturerName = form.name.trim()
       const morningHours = Number(form.morning_available_hours)
       const afternoonHours = Number(form.afternoon_available_hours)
+      const availabilityMaximum = availabilityHoursFor(form.is_all_week, form.available_days || [])
       if (!LECTURER_ID_PATTERN.test(lecturerIdValue)) {
         setFormError('Lecturer ID must start with a letter, contain only letters and numbers, and be 3–8 characters long.')
         return
@@ -152,8 +181,12 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
         setFormError('Full name must contain only letters and spaces, cannot be only spaces, and must be at least 3 characters long.')
         return
       }
-      if (!Number.isInteger(morningHours) || morningHours < 0 || morningHours > 20 || !Number.isInteger(afternoonHours) || afternoonHours < 0 || afternoonHours > 20) {
-        setFormError('Morning and afternoon availability must each be a whole number from 0 to 20 hours per week.')
+      if (!form.is_all_week && !(form.available_days || []).length) {
+        setFormError('Select at least one available day, or choose Available All Week.')
+        return
+      }
+      if (!Number.isInteger(morningHours) || morningHours < 0 || morningHours > availabilityMaximum || !Number.isInteger(afternoonHours) || afternoonHours < 0 || afternoonHours > availabilityMaximum) {
+        setFormError(`Morning and afternoon availability must each be a whole number from 0 to ${availabilityMaximum} hours per week (${HOURS_PER_SHIFT_PER_DAY} hours per selected day).`)
         return
       }
       dbPayload.lecturer_id = lecturerIdValue
@@ -286,8 +319,8 @@ export function Modal({ modal, semester, semesters = [], subjects = [], lecturer
               <Field label="Lecturer ID" value={form.lecturer_id} onChange={(v) => change('lecturer_id', v)} placeholder="LEC101" minLength={3} maxLength={8} pattern="[A-Za-z][A-Za-z0-9]{2,7}" />
               <Field label="Full Name" value={form.name} onChange={(v) => change('name', v)} placeholder="Yahye Ali Isse" minLength={3} pattern="[A-Za-z ]+" />
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Morning available hours (per week)" type="number" min="0" max="20" value={form.morning_available_hours ?? 20} onChange={(v) => change('morning_available_hours', v)} placeholder="12" />
-                <Field label="Afternoon available hours (per week)" type="number" min="0" max="20" value={form.afternoon_available_hours ?? 20} onChange={(v) => change('afternoon_available_hours', v)} placeholder="3" />
+                <Field label={`Morning available hours (max ${availabilityHoursFor(form.is_all_week, form.available_days || [])}/week)`} type="number" min="0" max={availabilityHoursFor(form.is_all_week, form.available_days || [])} value={form.morning_available_hours ?? 20} onChange={(v) => change('morning_available_hours', v)} placeholder="12" />
+                <Field label={`Afternoon available hours (max ${availabilityHoursFor(form.is_all_week, form.available_days || [])}/week)`} type="number" min="0" max={availabilityHoursFor(form.is_all_week, form.available_days || [])} value={form.afternoon_available_hours ?? 20} onChange={(v) => change('afternoon_available_hours', v)} placeholder="3" />
               </div>
               
 

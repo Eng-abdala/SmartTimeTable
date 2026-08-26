@@ -6,6 +6,7 @@ import { Icon } from '../components/Icon'
 import { ManagerTable } from '../components/ManagerTable'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
+const HOURS_PER_SHIFT_PER_DAY = 4
 const LECTURER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9]{2,7}$/
 const LECTURER_NAME_PATTERN = /^[A-Za-z ]+$/
 
@@ -84,10 +85,11 @@ function parseRow(raw) {
     if (unknown.length) errors.push(`Unknown day(s): ${unknown.join(', ')}`)
   }
 
-  const morning_available_hours = morningRaw === '' || morningRaw == null ? 20 : Number(morningRaw)
-  const afternoon_available_hours = afternoonRaw === '' || afternoonRaw == null ? 20 : Number(afternoonRaw)
-  if (!Number.isInteger(morning_available_hours) || morning_available_hours < 0 || morning_available_hours > 20) errors.push('Morning Available Hours must be a whole number from 0 to 20')
-  if (!Number.isInteger(afternoon_available_hours) || afternoon_available_hours < 0 || afternoon_available_hours > 20) errors.push('Afternoon Available Hours must be a whole number from 0 to 20')
+  const maximumHours = (is_all_week ? DAYS.length : available_days.length) * HOURS_PER_SHIFT_PER_DAY
+  const morning_available_hours = morningRaw === '' || morningRaw == null ? maximumHours : Number(morningRaw)
+  const afternoon_available_hours = afternoonRaw === '' || afternoonRaw == null ? maximumHours : Number(afternoonRaw)
+  if (!Number.isInteger(morning_available_hours) || morning_available_hours < 0 || morning_available_hours > maximumHours) errors.push(`Morning Available Hours must be a whole number from 0 to ${maximumHours}`)
+  if (!Number.isInteger(afternoon_available_hours) || afternoon_available_hours < 0 || afternoon_available_hours > maximumHours) errors.push(`Afternoon Available Hours must be a whole number from 0 to ${maximumHours}`)
 
   return { lecturer_id, name, is_all_week, available_days, morning_available_hours, afternoon_available_hours, errors }
 }
