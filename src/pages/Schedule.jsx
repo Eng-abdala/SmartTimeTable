@@ -758,7 +758,7 @@ export function Schedule() {
     const totalPeriods = DAYS.reduce((total, day) => total + sessionsByDay[day].length, 0)
 
     return (
-      <div className="rounded-xl border border-black bg-white p-5 text-black shadow-xs sm:p-8" style={{ fontFamily: "'Times New Roman', Times, serif" }}>
+      <div className="lecturer-schedule rounded-xl border border-black bg-white p-5 text-black shadow-xs sm:p-8" style={{ fontFamily: "'Times New Roman', Times, serif" }}>
         <div className="mb-5 flex justify-between font-sans">
           <button onClick={() => setSelectedLecturerId('All')} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700">← Back to All Lecturers</button>
           <span className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">All semesters · {totalPeriods} periods</span>
@@ -777,6 +777,14 @@ export function Schedule() {
 
   return (
     <>
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #schedule-print-content, #schedule-print-content * { visibility: visible !important; }
+          #schedule-print-content { position: absolute; inset: 0 auto auto 0; width: 100%; }
+          #schedule-print-content .lecturer-schedule { border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+        }
+      `}</style>
       <header className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-brand-950 sm:text-3xl">
@@ -918,7 +926,7 @@ export function Schedule() {
       )}
 
       {/* Schedule Content */}
-      <div ref={printRef}>
+      <div ref={printRef} id="schedule-print-content">
         {activeTab === 'classes' ? (
           !semesterClasses.length ? (
             <Empty

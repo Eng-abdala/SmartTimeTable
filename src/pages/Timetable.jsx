@@ -819,9 +819,6 @@ export function Timetable() {
       return
     }
 
-    // Show feedback immediately, while the saved schedules are being checked.
-    setNotice('Checking lecturer availability and timetable conflicts…', 'warning')
-
     // Ensure all subjects have at least one lecturer assigned
     const unassignedSubjects = semesterSubjects.filter(sub => {
       const assigned = getSubjectLecturers(sub.id)
@@ -1026,7 +1023,7 @@ export function Timetable() {
     }
     await loadSavedTimetableMap()
     setIsSaved(true)
-    setNotice('Timetable saved to database successfully!', 'success')
+    setNotice(`${selectedClass?.name || 'Class'} timetable saved successfully!`, 'success')
   }
 
   const handleReset = () => {
@@ -1041,11 +1038,34 @@ export function Timetable() {
     localStorage.removeItem('tt_class'); localStorage.removeItem('tt_grid')
   }
 
+  const createStaticTimetableCopy = () => {
+    const source = printRef.current
+    if (!source) return null
+    const copy = source.cloneNode(true)
+    copy.querySelectorAll('.no-print').forEach(node => node.remove())
+    copy.querySelectorAll('select').forEach(select => {
+      const value = document.createElement('span')
+      value.textContent = select.options[select.selectedIndex]?.text || '—'
+      value.className = 'print-select-value'
+      select.replaceWith(value)
+    })
+    return copy
+  }
+
+  // Use the browser's normal print dialog. It never needs a pop-up window.
   const handlePrint = () => window.print()
 
   const handleDownloadPdf = () => {
     const el = printRef.current
+    if (!el) return
     const className = `${selectedClass?.name}_${selectedSemester?.name}_${selectedYear}`.replace(/\s+/g, '_')
+    // PDF should look like a completed timetable, not the editable web form.
+    const pdfCopy = createStaticTimetableCopy()
+    if (!pdfCopy) return
+    const pdfSource = document.createElement('div')
+    pdfSource.style.cssText = 'position:fixed;left:-100000px;top:0;width:1000px;background:#fff;padding:24px;'
+    pdfSource.appendChild(pdfCopy)
+    document.body.appendChild(pdfSource)
     html2pdf()
       .set({
         margin: 10,
@@ -1054,8 +1074,10 @@ export function Timetable() {
         html2canvas: { scale: 2, useCORS: true },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }, // Using portrait like the PDF sample
       })
-      .from(el)
+      .from(pdfSource)
       .save()
+      .then(() => pdfSource.remove())
+      .catch(() => pdfSource.remove())
   }
 
   const handleExportExcel = () => {
@@ -1103,6 +1125,9 @@ export function Timetable() {
   const expectedPeriodCount = semesterSubjects.reduce(
     (total, subject) => total + (Number(subject.theory_hours) || 0) + (Number(subject.lab_hours) || 0), 0
   )
+  // Department suffixes identify the internal curriculum record, but the
+  // printed timetable should identify only the class and semester level.
+  const printableSemesterName = selectedSemester?.name?.replace(/\s*\([^)]*\)\s*$/, '') || 'Semester'
 
   const handleDeleteSaved = async () => {
     if (!selectedClassId || !selectedSemesterId) return
@@ -1374,10 +1399,17 @@ export function Timetable() {
     <>
       <style>{`
         @media print {
-          body > * { display: none; }
-          #print-timetable { display: block !important; }
-          #print-timetable { position: fixed; top: 0; left: 0; width: 100%; }
+          @page { margin: 12mm; }
+          #print-timetable, #print-timetable * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          body * { visibility: hidden !important; }
+          #print-timetable, #print-timetable * { visibility: visible !important; }
+          #print-timetable { position: absolute; top: 0; left: 0; width: 100%; padding: 0 8mm; }
           .no-print { display: none !important; }
+          #print-timetable select { appearance: none; -webkit-appearance: none; border: 0 !important; background: transparent !important; pointer-events: none; }
+          #print-timetable thead { display: table-header-group; }
+          #print-timetable tr { break-inside: avoid; page-break-inside: avoid; }
+          #print-timetable .print-title { display: block !important; }
+          #print-timetable .print-total { display: block !important; }
         }
       `}</style>
 
@@ -1634,8 +1666,8 @@ export function Timetable() {
           <div ref={printRef} id="print-timetable" className="min-w-[640px] max-w-4xl bg-white" style={{fontFamily: "'Times New Roman', Times, serif"}}>
             
             {/* Title exact match */}
-            <h2 className="text-center text-[22px] font-bold mb-6 text-black">
-              Period of {selectedClass?.name} - {selectedSemester?.name}
+            <h2 className="print-title text-center text-[22px] font-bold mb-6 text-black">
+              Period of {selectedClass?.name} - {printableSemesterName}
             </h2>
 
             {/* The Table */}
@@ -1727,7 +1759,7 @@ export function Timetable() {
             </table>
 
             {/* Footer */}
-            <div className="text-center font-bold mt-1 text-[15px] text-black">
+            <div className="print-total text-center font-bold mt-3 text-[15px] text-black">
               Total Periods: {totalPeriods}
             </div>
 

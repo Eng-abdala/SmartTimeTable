@@ -237,7 +237,7 @@ export function AppLayout() {
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
           </div>
           <div>
-            <p className="text-sm font-bold leading-tight text-brand-950">Just Timetable</p>
+            <p className="text-sm font-bold leading-tight text-brand-950">JUST Timetable</p>
             <p className="text-[10px] text-slate-500">IT Faculty Portal</p>
           </div>
         </div>
@@ -257,7 +257,7 @@ export function AppLayout() {
             <img src={facultyLogo} className="h-full w-full object-cover" alt="Jamhuriya University logo" />
           </div>
           <div>
-            <p className="text-base font-bold tracking-tight">Just Timetable</p>
+            <p className="text-base font-bold tracking-tight">JUST Timetable</p>
             <p className="mt-0.5 text-[11px] text-cyan-100/65">IT Faculty Portal</p>
           </div>
           <button type="button" onClick={() => setMobileNavOpen(false)} className="ml-auto rounded-lg p-2 text-cyan-50/80 hover:bg-white/10 lg:hidden" aria-label="Close navigation menu">‹</button>
