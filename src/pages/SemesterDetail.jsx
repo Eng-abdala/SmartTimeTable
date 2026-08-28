@@ -106,7 +106,20 @@ function LecturerSearch({ unaddedLecturers, onAdd }) {
 // ── Subject Assign Cell (for table) ──────────────────────────────────────────
 function SubjectAssignCell({ lecturer, assignedSubjects, unassignedSubjects, toggleSubjectForLecturer, colorStyle }) {
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [subjectQuery, setSubjectQuery] = useState('')
   const pickerRef = useRef()
+  const searchInputRef = useRef()
+
+  const matchingSubjects = useMemo(() => {
+    const query = subjectQuery.trim().toLowerCase()
+    if (!query) return unassignedSubjects
+
+    return unassignedSubjects.filter(subject =>
+      [subject.name, subject.code, subject.id]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(query))
+    )
+  }, [subjectQuery, unassignedSubjects])
 
   // Close picker on outside click
   useEffect(() => {
@@ -114,6 +127,11 @@ function SubjectAssignCell({ lecturer, assignedSubjects, unassignedSubjects, tog
     document.addEventListener('mousedown', handle)
     return () => document.removeEventListener('mousedown', handle)
   }, [])
+
+  useEffect(() => {
+    if (pickerOpen) searchInputRef.current?.focus()
+    else setSubjectQuery('')
+  }, [pickerOpen])
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -147,11 +165,23 @@ function SubjectAssignCell({ lecturer, assignedSubjects, unassignedSubjects, tog
 
           {pickerOpen && (
             <div className="absolute left-0 top-full z-40 mt-1.5 min-w-[220px] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-              <p className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+              <p className="px-3 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                 Assign a subject
               </p>
+              <div className="border-b border-slate-100 px-3 py-2">
+                <label className="sr-only" htmlFor={`subject-search-${lecturer.id}`}>Search subjects</label>
+                <input
+                  ref={searchInputRef}
+                  id={`subject-search-${lecturer.id}`}
+                  type="search"
+                  value={subjectQuery}
+                  onChange={event => setSubjectQuery(event.target.value)}
+                  placeholder="Search by name or subject ID…"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700 outline-none placeholder:text-slate-400 focus:border-brand-400 focus:bg-white focus:ring-2 focus:ring-brand-100"
+                />
+              </div>
               <ul className="max-h-48 overflow-y-auto py-1">
-                {unassignedSubjects.map(sub => (
+                {matchingSubjects.map(sub => (
                   <li key={sub.id}>
                     <button
                       onClick={() => { toggleSubjectForLecturer(lecturer.id, sub.id); setPickerOpen(false) }}
@@ -164,6 +194,11 @@ function SubjectAssignCell({ lecturer, assignedSubjects, unassignedSubjects, tog
                     </button>
                   </li>
                 ))}
+                {matchingSubjects.length === 0 && (
+                  <li className="px-3 py-3 text-xs text-slate-400">
+                    No subjects match “{subjectQuery.trim()}”.
+                  </li>
+                )}
               </ul>
             </div>
           )}
