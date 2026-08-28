@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
 import html2pdf from 'html2pdf.js'
+import * as XLSX from 'xlsx'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 const DAY_SHORT = { Saturday: 'Sat', Sunday: 'Sun', Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed' }
@@ -49,54 +50,19 @@ function getSubjectStyle(subjectId) {
 
 function exportTableToExcel(tableElement, filename) {
   if (!tableElement) return
+  const tables = Array.from(tableElement.querySelectorAll('table'))
+  if (!tables.length) throw new Error('No schedule table was found.')
 
-  const clone = tableElement.cloneNode(true)
-  clone.querySelectorAll('button, svg').forEach(el => el.remove())
+  const workbook = XLSX.utils.book_new()
+  tables.forEach((table, index) => {
+    const worksheet = XLSX.utils.table_to_sheet(table, { raw: true })
+    worksheet['!cols'] = Array.from({ length: Math.max(2, table.rows[0]?.cells.length || 2) }, (_, column) => ({ wch: column < 2 ? 20 : 28 }))
+    const sheetName = tables.length === 1 ? 'Schedule' : `Schedule ${index + 1}`
+    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
+  })
 
-  const html = `
-    <html xmlns:o="urn:schemas-microsoft-com:office:office" 
-          xmlns:x="urn:schemas-microsoft-com:office:excel" 
-          xmlns="http://www.w3.org/TR/REC-html40">
-    <head>
-      <meta charset="utf-8" />
-      <!--[if gte mso 9]>
-      <xml>
-        <x:ExcelWorkbook>
-          <x:ExcelWorksheets>
-            <x:ExcelWorksheet>
-              <x:Name>Schedule</x:Name>
-              <x:WorksheetOptions>
-                <x:DisplayGridlines/>
-              </x:WorksheetOptions>
-            </x:ExcelWorksheet>
-          </x:ExcelWorksheets>
-        </x:ExcelWorkbook>
-      </xml>
-      <![endif]-->
-      <style>
-        body { font-family: Arial, sans-serif; font-size: 10pt; }
-        table { border-collapse: collapse; width: 100%; }
-        th { background-color: #ffff00 !important; color: #000000 !important; font-weight: bold; border: 1px solid #000000; padding: 8px; text-align: center; }
-        th.corner-header { background-color: #ffffff !important; }
-        td { border: 1px solid #000000; padding: 6px 8px; text-align: center; vertical-align: middle; font-size: 9.5pt; font-weight: 500; }
-        .day-col { font-weight: bold; background-color: #ffffff; vertical-align: middle; }
-        .time-col { white-space: nowrap; font-weight: 500; }
-      </style>
-    </head>
-    <body>
-      ${clone.outerHTML}
-    </body>
-    </html>
-  `
-
-  const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${filename}.xls`
-  document.body.appendChild(a)
-  a.click()
-  URL.revokeObjectURL(url)
+  // This writes a real Excel workbook, not an HTML file with an .xls suffix.
+  XLSX.writeFile(workbook, `${filename}.xlsx`, { compression: true })
 }
 
 function getSlotTimeLabel(shift, slotIndex, slotKind) {
@@ -395,7 +361,7 @@ export function Schedule() {
     html2pdf()
       .set({
         margin: 6,
-        filename: `Schedule_${tabName}_Class_of_${selectedYear}.pdf`,
+        filename: `Schedule_${tabName}_${(selectedSemesterLevel || 'All_Semesters').replace(/\s+/g, '_')}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true },
         jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' },
@@ -406,10 +372,18 @@ export function Schedule() {
 
   const handleExportExcel = () => {
     const el = printRef.current
+    if (!el) {
+      setNotice('No schedule is available to export yet.', 'error')
+      return
+    }
     const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
-    const filename = `Schedule_${tabName}_Class_of_${selectedYear}`
-    exportTableToExcel(el, filename)
-    setNotice(`Master ${tabName} Schedule exported to Excel successfully!`, 'success')
+    const filename = `Schedule_${tabName}_${(selectedSemesterLevel || 'All_Semesters').replace(/\s+/g, '_')}`
+    try {
+      exportTableToExcel(el, filename)
+      setNotice(`Master ${tabName} Schedule download started.`, 'success')
+    } catch (error) {
+      setNotice(`Excel export failed: ${error.message}`, 'error')
+    }
   }
 
   // Renders the master schedule grid for Classes.
