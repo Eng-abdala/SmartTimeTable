@@ -2,7 +2,6 @@ plugins = []
 functionsDirectory = "C:\\Users\\Pc\\SmartTimeTable\\netlify\\functions"
 functionsDirectoryOrigin = "config-v1"
 headers = []
-redirects = []
 
 [functions]
 
@@ -28,3 +27,15 @@ functions = "C:\\Users\\Pc\\SmartTimeTable\\netlify\\functions"
 [build.processing.js]
 
 [build.services]
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200.0
+force = false
+
+[redirects.query]
+
+[redirects.conditions]
+
+[redirects.headers]

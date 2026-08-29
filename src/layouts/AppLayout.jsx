@@ -99,12 +99,16 @@ export function AppLayout() {
 
   const nav = [
     ['Dashboard', 'grid', '/'],
-    ['Timetable', 'calendar', '/timetable'],
-    ['Master Schedule', 'table', '/schedule'],
-    ['Reports', 'grid', '/reports'],
+    ['Lecturers', 'users', '/lecturers'],
     ['Semesters', 'layers', '/semesters'],
     ['Classes', 'group', '/classes'],
-    ['Lecturers', 'users', '/lecturers']
+    ['Timetable', 'calendar', '/timetable'],
+    ['Master Schedule', 'table', '/schedule'],
+   
+   
+   
+    
+     ['Reports', 'grid', '/reports'],
   ]
 
   // Departments may each have the same level (for example Semester 4 CA/CN/CM).
