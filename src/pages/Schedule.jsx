@@ -67,6 +67,8 @@ function exportTableToExcel(tableElement, filename) {
 
 function getSlotTimeLabel(shift, slotIndex, slotKind) {
   if (shift === 'Afternoon') {
+    if (slotKind === 'early_11' || slotIndex === 4) return '11:00 AM – 12:00 PM'
+    if (slotKind === 'early_10' || slotIndex === 5) return '10:00 AM – 11:00 AM'
     const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM', '5:00–5:50 PM', '5:50–6:40 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
   } else {
@@ -408,6 +410,22 @@ export function Schedule() {
     const dayHasNewEarly = {}
     const dayHasAfternoonOne = {}
     const dayHasAfternoonTwo = {}
+    const dayHasAfternoonEarly10 = {}
+    const dayHasAfternoonEarly11 = {}
+    DAYS.forEach(day => {
+      dayHasAfternoonEarly10[day] = false
+      dayHasAfternoonEarly11[day] = false
+    })
+    if (!isMorning) {
+      classList.forEach(cls => {
+        const grid = timetablesByClass[cls.id]
+        DAYS.forEach(day => {
+          const sessions = grid?.[day] || []
+          if (sessions.some(s => s.slotKind === 'early_10' || s.slotIndex === 5)) dayHasAfternoonEarly10[day] = true
+          if (sessions.some(s => s.slotKind === 'early_11' || s.slotIndex === 4)) dayHasAfternoonEarly11[day] = true
+        })
+      })
+    }
     if (isMorning) {
       DAYS.forEach(day => {
         dayHasOverflow[day] = false; dayHasSixthPeriod[day] = false
@@ -474,9 +492,12 @@ export function Schedule() {
                 // Standard days show 5 rows starting at 7:45 AM.
                 const daySlots = !isMorning
                   ? [
+                      ...(dayHasAfternoonEarly10[day] ? [{ slotIndex: 5, time: '10:00 AM – 11:00 AM' }] : []),
+                      ...(dayHasAfternoonEarly11[day] ? [{ slotIndex: 4, time: '11:00 AM – 12:00 PM' }] : []),
+                      ...((dayHasAfternoonEarly10[day] || dayHasAfternoonEarly11[day]) ? [{ isBreak: true, time: '12:00 PM – 1:00 PM (Break)' }] : []),
                       ...slots,
-                      ...(highestSlotByDay[day] >= 4 ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
-                      ...(highestSlotByDay[day] >= 5 ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
+                      ...(highestSlotByDay[day] >= 4 && !dayHasAfternoonEarly11[day] ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
+                      ...(highestSlotByDay[day] >= 5 && !dayHasAfternoonEarly10[day] ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
                     ]
                   : dayUsesNewSlotModel[day]
                     ? [

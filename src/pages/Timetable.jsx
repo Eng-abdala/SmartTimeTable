@@ -32,10 +32,49 @@ function isMorningTwoHourPair(first, second) {
 const AFTERNOON_DAY_SLOTS = [0, 1, 2, 3]
 
 function isAfternoonTwoHourPair(first, second) {
-  return (first === 0 && second === 1) || (first === 2 && second === 3)
+  return (first === 0 && second === 1) ||
+    (first === 2 && second === 3) ||
+    (first === 5 && second === 4) ||
+    (first === 4 && second === 5)
 }
 
-function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0) {
+function getAfternoonOverflowDaySlots(selection) {
+  const slots = []
+  if (selection?.early_10 && selection?.early_11) {
+    slots.push(5, 4)
+  }
+  slots.push(0, 1, 2, 3)
+  if (selection?.early_11 && !selection?.early_10) {
+    slots.push(4)
+  }
+  if (selection?.early_10 && !selection?.early_11) {
+    slots.push(5)
+  }
+  return slots
+}
+
+function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0, shift = 'Morning') {
+  if (shift === 'Afternoon') {
+    const selection = Object.fromEntries(DAYS.map(day => [day, { early_11: false, early_10: false }]))
+    let remaining = requiredPeriods
+    if (remaining === 1) {
+      selection[DAYS[DAYS.length - 1]].early_11 = true
+    } else if (remaining === 2) {
+      selection[DAYS[DAYS.length - 1]].early_11 = true
+      selection[DAYS[DAYS.length - 1]].early_10 = true
+    } else if (remaining > 2) {
+      for (let i = DAYS.length - 1; i >= 0 && remaining > 0; i--) {
+        const day = DAYS[i]
+        selection[day].early_11 = true
+        remaining--
+        if (remaining > 0) {
+          selection[day].early_10 = true
+          remaining--
+        }
+      }
+    }
+    return selection
+  }
   const selection = Object.fromEntries(DAYS.map(day => [day, { early: false, afternoon_1: false, afternoon_2: false }]))
   const extras = requiredPeriods
   // A 7:00 AM period is a required single-hour slot. Use no more than the
@@ -127,7 +166,7 @@ function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning')
   return semesterSubjects.flatMap(sub => {
     const slotOrder = shift === 'Morning'
       ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-      : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+      : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
     const canMakeTwoHourBlock = (first, second) => {
       if (shift === 'Morning') {
         return (first === 4 && second === 0) ||
@@ -301,6 +340,9 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     if (size > 1 && shift === 'Morning' && blockSlots.some((slot, index) =>
       index > 0 && !isMorningTwoHourPair(blockSlots[index - 1], slot)
     )) return null
+    if (size > 1 && shift === 'Afternoon' && blockSlots.some((slot, index) =>
+      index > 0 && !isAfternoonTwoHourPair(blockSlots[index - 1], slot)
+    )) return null
 
     const lecturer = preferredLecturer
     if (!isLecturerAvailableOnDay(lecturer, day)) return null
@@ -321,13 +363,13 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   const daySlotsByDay = {}
   if (totalPeriods >= 20 || DAYS.some(day => {
     const selected = overflowSelection?.[day] || {}
-    return selected.early || selected.afternoon_1 || selected.afternoon_2
+    return selected.early || selected.afternoon_1 || selected.afternoon_2 || selected.early_11 || selected.early_10
   })) {
     DAYS.forEach(day => {
       const selected = overflowSelection?.[day] || {}
       daySlotsByDay[day] = shift === 'Morning'
         ? getMorningOverflowDaySlots(selected)
-        : [...AFTERNOON_DAY_SLOTS]
+        : getAfternoonOverflowDaySlots(selected)
     })
   } else {
     // Do not force a class with (for example) 18 hours into 4+4+4+3+3.
@@ -342,7 +384,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
   const getDaySlots = (day) => daySlotsByDay[day] || []
   const getMaxSlots = (day) => getDaySlots(day).length
-  const getSlotKind = (slotIndex) => ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slotIndex] || 'standard')
+  const getSlotKind = (slotIndex) => {
+    if (shift === 'Afternoon') {
+      return { 4: 'early_11', 5: 'early_10' }[slotIndex] || 'standard'
+    }
+    return { 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slotIndex] || 'standard'
+  }
 
   const theoryDayIdxMap = {}
   let dayIdx = attemptSeed % DAYS.length
@@ -420,7 +467,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   // It keeps 8:45–9:45 directly below 7:45–8:45 in the generated table.
   const slotOrder = shift === 'Morning'
     ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+    : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
   DAYS.forEach(day => timetable[day].sort((a, b) =>
     (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex)
   ))
@@ -430,10 +477,18 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 // Morning slot 5 is 1:00–2:00 PM, which overlaps afternoon slot 0.
 function getBlockingSlotIndex(currentShift, otherShift, otherSlotIndex) {
   if (currentShift === otherShift) return otherSlotIndex
-  if (currentShift === 'Morning' && otherShift === 'Afternoon' && otherSlotIndex === 0) return 5
-  if (currentShift === 'Morning' && otherShift === 'Afternoon' && otherSlotIndex === 1) return 6
-  if (currentShift === 'Afternoon' && otherShift === 'Morning' && otherSlotIndex === 5) return 0
-  if (currentShift === 'Afternoon' && otherShift === 'Morning' && otherSlotIndex === 6) return 1
+  if (currentShift === 'Morning' && otherShift === 'Afternoon') {
+    if (otherSlotIndex === 0) return 5
+    if (otherSlotIndex === 1) return 6
+    if (otherSlotIndex === 4) return 3
+    if (otherSlotIndex === 5) return 2
+  }
+  if (currentShift === 'Afternoon' && otherShift === 'Morning') {
+    if (otherSlotIndex === 5) return 0
+    if (otherSlotIndex === 6) return 1
+    if (otherSlotIndex === 3) return 4
+    if (otherSlotIndex === 2) return 5
+  }
   return null
 }
 
@@ -448,13 +503,13 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
   const availableSlots = {}
   if (totalPeriods >= 20 || DAYS.some(day => {
     const selected = overflowSelection?.[day] || {}
-    return selected.early || selected.afternoon_1 || selected.afternoon_2
+    return selected.early || selected.afternoon_1 || selected.afternoon_2 || selected.early_11 || selected.early_10
   })) {
     DAYS.forEach(day => {
       const extra = overflowSelection?.[day] || {}
       availableSlots[day] = shift === 'Morning'
         ? getMorningOverflowDaySlots(extra)
-        : [...AFTERNOON_DAY_SLOTS]
+        : getAfternoonOverflowDaySlots(extra)
     })
   } else {
     DAYS.forEach(day => { availableSlots[day] = shift === 'Morning' ? [0, 1, 2, 3] : [...AFTERNOON_DAY_SLOTS] })
@@ -476,7 +531,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
 
   const slotOrder = shift === 'Morning'
     ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+    : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
   const arePairable = (daySlots, first, second) => {
     if (shift !== 'Morning') return isAfternoonTwoHourPair(first, second)
     // On an early-start day, 0+1 would strand the 7:00 AM slot and prevent
@@ -548,7 +603,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
             if (!lecturerSlots[lecturer.id]) lecturerSlots[lecturer.id] = {}
             if (!lecturerSlots[lecturer.id][day]) lecturerSlots[lecturer.id][day] = new Set()
             lecturerSlots[lecturer.id][day].add(slot)
-            timetable[day].push({ slotIndex: slot, slotKind: ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slot] || 'standard'), subject: block.subject, type: block.sessionTypes[slotIndex], lecturer })
+            timetable[day].push({ slotIndex: slot, slotKind: (shift === 'Afternoon' ? ({ 4: 'early_11', 5: 'early_10' }[slot] || 'standard') : ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slot] || 'standard')), subject: block.subject, type: block.sessionTypes[slotIndex], lecturer })
           })
           lecturerLoad[lecturer.id] = (lecturerLoad[lecturer.id] || 0) + block.size
 
@@ -700,17 +755,20 @@ export function Timetable() {
     overflowSelection[day]?.early,
     overflowSelection[day]?.afternoon_1,
     overflowSelection[day]?.afternoon_2,
+    overflowSelection[day]?.early_11,
+    overflowSelection[day]?.early_10,
   ].filter(Boolean).length, 0)
   const selectedOverflowSingleSlots = getOverflowSingleSlotCount(overflowSelection)
-  const hasValidOverflowShape = selectedOverflowSingleSlots <= oddSubjectCount
+  const hasValidOverflowShape = selectedClass?.shift === 'Afternoon' ? true : (selectedOverflowSingleSlots <= oddSubjectCount)
 
   useEffect(() => {
     setOverflowSelection(createOverflowSelection(
       curriculumHours,
       requiredOverflowPeriods,
       Math.min(oddSubjectCount, requiredOverflowPeriods),
+      selectedClass?.shift || 'Morning'
     ))
-  }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount])
+  }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount, selectedClass?.shift])
 
   // Load global busy map for other classes
   const loadGlobalBusyMap = useCallback(async (currentClassId, currentShift) => {
@@ -816,6 +874,10 @@ export function Timetable() {
     }
     if (selectedClass.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape)) {
       setNotice(`Choose exactly ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} before generating.`, 'error')
+      return
+    }
+    if (selectedClass.shift === 'Afternoon' && selectedOverflowPeriods !== requiredOverflowPeriods) {
+      setNotice(`Dooro ${requiredOverflowPeriods} saacadood oo horay u bilawda (11:00–12:00 ama 10:00–12:00) intaadan jadwalka samayn.`, 'error')
       return
     }
 
@@ -1199,6 +1261,8 @@ export function Timetable() {
         ? (morningEarly[slotIdx] || `Period ${slotIdx + 1}`)
         : (morningDefault[slotIdx] || `Period ${slotIdx + 1}`)
     } else {
+      if (slotKind === 'early_11' || slotIdx === 4) return '11:00 AM – 12:00 PM'
+      if (slotKind === 'early_10' || slotIdx === 5) return '10:00 AM – 11:00 AM'
       const afternoonSlots = [
         '01:00 PM - 01:50 PM', '01:50 PM - 02:40 PM', '02:40 PM - 03:30 PM', 
         '04:00 PM - 05:00 PM', '05:00 PM - 05:50 PM', '05:50 PM - 06:40 PM', '06:40 PM - 07:30 PM'
@@ -1622,6 +1686,64 @@ export function Timetable() {
               </div>
             )}
 
+            {selectedClass?.shift === 'Afternoon' && requiredOverflowPeriods > 0 && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-brand-950">Dooro Saacadaha Hore ee Dheeraadka ah ({curriculumHours} Hours)</p>
+                    <p className="mt-0.5 text-xs text-slate-600">
+                      {requiredOverflowPeriods === 1
+                        ? 'Wadartu waa 21 saac: Dooro maalinta ardaydu soo galayso 11:00 AM – 12:00 PM.'
+                        : 'Wadartu waa 22 saac: Dooro maalinta ardaydu soo galayso 10:00 AM – 12:00 PM (ama 11:00 AM – 12:00 PM labo maalmood).'}
+                    </p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${selectedOverflowPeriods === requiredOverflowPeriods ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {selectedOverflowPeriods} / {requiredOverflowPeriods}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {DAYS.map(day => (
+                    <div key={day} className="grid grid-cols-[78px_repeat(2,minmax(0,1fr))] items-center gap-2 text-xs">
+                      <span className="font-semibold text-slate-700">{day.slice(0, 3)}</span>
+                      {[
+                        ['early_10', '10:00 AM – 11:00 AM'],
+                        ['early_11', '11:00 AM – 12:00 PM'],
+                      ].map(([period, label]) => {
+                        const checked = !!overflowSelection[day]?.[period]
+                        const reachedLimit = !checked && selectedOverflowPeriods >= requiredOverflowPeriods
+                        return (
+                          <label key={period} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={reachedLimit}
+                              onChange={event => setOverflowSelection(current => {
+                                const currentCount = DAYS.reduce((total, currentDay) => total + [
+                                  current[currentDay]?.early_10,
+                                  current[currentDay]?.early_11,
+                                ].filter(Boolean).length, 0)
+                                if (event.target.checked && currentCount >= requiredOverflowPeriods) return current
+                                return {
+                                  ...current,
+                                  [day]: {
+                                    ...current[day],
+                                    [period]: event.target.checked,
+                                  },
+                                }
+                              })}
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
+                            />
+                            {label}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Status: already has a timetable */}
             {alreadyHasTimetable && selectedClassId && selectedSemesterId && (
               <div className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-900 flex items-start gap-2">
@@ -1643,7 +1765,7 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable || (selectedClass?.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape))}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable || (selectedClass?.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape)) || (selectedClass?.shift === 'Afternoon' && selectedOverflowPeriods !== requiredOverflowPeriods)}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />
