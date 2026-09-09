@@ -353,8 +353,21 @@ export function Schedule() {
   })
   const [selectedShift, setSelectedShift] = useState('All') // 'All', 'Morning', 'Afternoon'
   const [selectedLecturerId, setSelectedLecturerId] = useState('All') // 'All' or specific lecturer id
+  const [lecturerSearchQuery, setLecturerSearchQuery] = useState('')
+  const [isLecturerDropdownOpen, setIsLecturerDropdownOpen] = useState(false)
+  const lecturerDropdownRef = useRef(null)
   const [timetablesData, setTimetablesData] = useState([])
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (lecturerDropdownRef.current && !lecturerDropdownRef.current.contains(event.target)) {
+        setIsLecturerDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   useEffect(() => {
     if (!selectedSemesterLevel && semesterLevels.length > 0) {
@@ -439,11 +452,41 @@ export function Schedule() {
     return lecturers.filter(lecturer => ids.has(lecturer.id)).sort((a, b) => a.name.localeCompare(b.name))
   }, [allLecturerSessions, lecturers])
 
+  const allLecturersList = useMemo(() => {
+    return [...lecturers].sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  }, [lecturers])
+
+  // Filter lecturers by Name AND ID (case-insensitive)
+  const filteredLecturers = useMemo(() => {
+    const q = lecturerSearchQuery.trim().toLowerCase()
+    if (!q) {
+      const scheduledSet = new Set(allScheduledLecturers.map(l => l.id))
+      const nonScheduled = allLecturersList.filter(l => !scheduledSet.has(l.id))
+      return [...allScheduledLecturers, ...nonScheduled]
+    }
+    return allLecturersList.filter(l => {
+      const nameMatch = (l.name || '').toLowerCase().includes(q)
+      const idMatch = (l.lecturer_id || '').toLowerCase().includes(q)
+      return nameMatch || idMatch
+    }).sort((a, b) => {
+      const aNameStarts = (a.name || '').toLowerCase().startsWith(q)
+      const bNameStarts = (b.name || '').toLowerCase().startsWith(q)
+      if (aNameStarts && !bNameStarts) return -1
+      if (!aNameStarts && bNameStarts) return 1
+      const aIdStarts = (a.lecturer_id || '').toLowerCase().startsWith(q)
+      const bIdStarts = (b.lecturer_id || '').toLowerCase().startsWith(q)
+      if (aIdStarts && !bIdStarts) return -1
+      if (!aIdStarts && bIdStarts) return 1
+      return (a.name || '').localeCompare(b.name || '')
+    })
+  }, [allLecturersList, allScheduledLecturers, lecturerSearchQuery])
+
   // Map lecturerId -> day -> `${shift}_${slotIndex}` -> array of { classObj, subject, type, slotIndex }
+  // Includes ALL classes across all semesters so the lecturers timetable is NOT locked to any single semester!
   const lecturerScheduleMap = useMemo(() => {
     const map = {}
 
-    semesterClasses.forEach(cls => {
+    classes.forEach(cls => {
       const grid = timetablesByClass[cls.id]
       if (!grid) return
 
@@ -472,9 +515,9 @@ export function Schedule() {
     })
 
     return map
-  }, [semesterClasses, classes, activeTab, timetablesByClass])
+  }, [classes, timetablesByClass])
 
-  // Active lecturers who have assignments in this semester / shift
+  // Active lecturers who have assignments across any class / semester
   const activeLecturers = useMemo(() => {
     const activeIds = new Set(Object.keys(lecturerScheduleMap))
     const list = lecturers.filter(l => activeIds.has(l.id))
@@ -483,7 +526,7 @@ export function Schedule() {
 
   const morningLecturers = useMemo(() => {
     const ids = new Set()
-    morningClasses.forEach(cls => {
+    classes.filter(c => c.shift === 'Morning').forEach(cls => {
       const grid = timetablesByClass[cls.id]
       if (!grid) return
       DAYS.forEach(day => {
@@ -495,11 +538,11 @@ export function Schedule() {
       })
     })
     return activeLecturers.filter(l => ids.has(l.id))
-  }, [activeLecturers, morningClasses, timetablesByClass])
+  }, [activeLecturers, classes, timetablesByClass])
 
   const afternoonLecturers = useMemo(() => {
     const ids = new Set()
-    afternoonClasses.forEach(cls => {
+    classes.filter(c => c.shift === 'Afternoon').forEach(cls => {
       const grid = timetablesByClass[cls.id]
       if (!grid) return
       DAYS.forEach(day => {
@@ -511,7 +554,7 @@ export function Schedule() {
       })
     })
     return activeLecturers.filter(l => ids.has(l.id))
-  }, [activeLecturers, afternoonClasses, timetablesByClass])
+  }, [activeLecturers, classes, timetablesByClass])
 
   // Helper: get ordered sessions for a lecturer on a day
   const getLecturerDaySessions = (lecId, day) => {
@@ -563,7 +606,8 @@ export function Schedule() {
         slotIndices.forEach(slotIdx => {
           const lecturerMap = {}
 
-          semesterClasses.filter(c => (c.shift || 'Morning') === shift).forEach(cls => {
+          const classPool = activeTab === 'lecturers' ? classes : semesterClasses
+          classPool.filter(c => (c.shift || 'Morning') === shift).forEach(cls => {
             const grid = timetablesByClass[cls.id]
             if (!grid || !grid[day] || !Array.isArray(grid[day])) return
 
@@ -909,21 +953,37 @@ export function Schedule() {
                 return (
                   <tr key={lec.id} className="border-b border-black hover:bg-slate-50/60 transition">
                     {/* Lecturer Info Column */}
-                    <td className="border-r border-black px-4 py-3.5 font-semibold text-brand-950 align-top w-48 bg-white">
+                    <td
+                      onClick={() => {
+                        setSelectedLecturerId(lec.id)
+                        setLecturerSearchQuery('')
+                        setIsLecturerDropdownOpen(false)
+                      }}
+                      className="cursor-pointer group border-r border-black px-4 py-3.5 font-semibold text-brand-950 align-top w-48 bg-white hover:bg-brand-50/70 transition"
+                      title={`Click to view schedule for ${lec.name}`}
+                    >
                       <div className="flex items-start gap-2.5">
-                        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-bold text-white shadow-xs">
+                        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-bold text-white shadow-xs group-hover:scale-105 transition">
                           {lec.name.charAt(0)}
                         </div>
-                        <div>
+                        <div className="min-w-0 flex-1">
                           <button
-                            onClick={() => setSelectedLecturerId(lec.id)}
-                            className="font-bold text-brand-950 hover:text-brand-600 text-left transition text-xs"
-                            title="Click to view individual schedule for this lecturer"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedLecturerId(lec.id)
+                              setLecturerSearchQuery('')
+                              setIsLecturerDropdownOpen(false)
+                            }}
+                            className="font-bold text-brand-950 group-hover:text-brand-600 group-hover:underline text-left transition text-xs block truncate"
+                            title={`Click to view schedule for ${lec.name}`}
                           >
                             {lec.name}
                           </button>
-                          <div className="text-[10px] text-slate-500 font-normal mt-0.5">
-                            ID: {lec.lecturer_id || 'N/A'}
+                          <div className="text-[10px] text-slate-500 font-normal mt-0.5 flex items-center gap-1">
+                            <span className="font-mono font-medium text-slate-600 bg-slate-100 px-1 rounded">
+                              ID: {lec.lecturer_id || 'N/A'}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -999,13 +1059,69 @@ export function Schedule() {
 
     return (
       <div className="lecturer-schedule rounded-xl border border-black bg-white p-5 text-black shadow-xs sm:p-8" style={{ fontFamily: "'Times New Roman', Times, serif" }}>
-        <div className="mb-5 flex justify-between font-sans">
-          <button onClick={() => setSelectedLecturerId('All')} className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700">← Back to All Lecturers</button>
-          <span className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">All semesters · {totalPeriods} periods</span>
+        <div className="mb-5 flex justify-between font-sans items-center">
+          <button
+            onClick={() => {
+              setSelectedLecturerId('All')
+              setLecturerSearchQuery('')
+              setIsLecturerDropdownOpen(false)
+            }}
+            className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition flex items-center gap-1.5"
+          >
+            <span>←</span> Back to All Lecturers
+          </button>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-mono font-bold text-slate-700 border border-slate-200">
+              ID: {lec.lecturer_id || 'N/A'}
+            </span>
+            <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700 border border-brand-200">
+              All semesters · {totalPeriods} periods
+            </span>
+          </div>
         </div>
-        <h2 className="mb-5 text-center text-lg font-bold sm:text-xl">Lecturer Period: {lec.lecturer_id || 'Lecturer'} - {lec.name}</h2>
-        <div className="overflow-x-auto"><table className="w-full min-w-[650px] border-collapse text-left text-sm"><thead><tr><th className="border border-black px-3 py-2 text-center">Class</th><th className="border border-black px-3 py-2 text-center">Course</th><th className="border border-black px-3 py-2 text-center">Time</th><th className="border border-black px-3 py-2 text-center">Type</th></tr></thead><tbody>{DAYS.map(day => sessionsByDay[day].length ? <React.Fragment key={day}><tr><td colSpan={4} className="border border-black bg-[#d9eef9] px-3 py-1.5 text-center font-bold">{day}</td></tr>{sessionsByDay[day].map((session, index) => <tr key={`${day}-${session.classObj.id}-${index}`}><td className="border border-black px-3 py-1.5 font-semibold">{session.classObj.name}</td><td className="border border-black px-3 py-1.5">{session.subject?.name || 'Subject'}</td><td className="border border-black px-3 py-1.5 text-center whitespace-nowrap">{session.timeLabel}</td><td className="border border-black px-3 py-1.5 text-center">{session.type || '—'}</td></tr>)}</React.Fragment> : null)}</tbody></table></div>
-        <p className="mt-1 text-center text-sm font-bold">Total Periods: {totalPeriods}</p>
+        <h2 className="mb-5 text-center text-lg font-bold sm:text-xl font-sans">
+          Lecturer Schedule: {lec.name} <span className="text-slate-500 font-mono text-base font-normal">({lec.lecturer_id || 'No ID'})</span>
+        </h2>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[650px] border-collapse text-left text-sm">
+            <thead>
+              <tr className="bg-[#ffff00]">
+                <th className="border border-black px-3 py-2 text-center font-bold text-black">Class</th>
+                <th className="border border-black px-3 py-2 text-center font-bold text-black">Course</th>
+                <th className="border border-black px-3 py-2 text-center font-bold text-black">Time</th>
+                <th className="border border-black px-3 py-2 text-center font-bold text-black">Type</th>
+              </tr>
+            </thead>
+            <tbody>
+              {totalPeriods === 0 ? (
+                <tr>
+                  <td colSpan={4} className="border border-black px-3 py-8 text-center text-slate-400 italic font-sans text-sm">
+                    No scheduled classes found for this lecturer yet.
+                  </td>
+                </tr>
+              ) : (
+                DAYS.map(day => sessionsByDay[day].length ? (
+                  <React.Fragment key={day}>
+                    <tr>
+                      <td colSpan={4} className="border border-black bg-[#d9eef9] px-3 py-1.5 text-center font-bold text-slate-900">
+                        {day}
+                      </td>
+                    </tr>
+                    {sessionsByDay[day].map((session, index) => (
+                      <tr key={`${day}-${session.classObj.id}-${index}`} className="hover:bg-slate-50">
+                        <td className="border border-black px-3 py-1.5 font-semibold">{session.classObj.name}</td>
+                        <td className="border border-black px-3 py-1.5">{session.subject?.name || 'Subject'}</td>
+                        <td className="border border-black px-3 py-1.5 text-center whitespace-nowrap">{session.timeLabel}</td>
+                        <td className="border border-black px-3 py-1.5 text-center">{session.type || '—'}</td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ) : null)
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-4 text-center text-sm font-bold font-sans">Total Scheduled Periods: {totalPeriods}</p>
       </div>
     )
   }
@@ -1157,21 +1273,172 @@ export function Schedule() {
           )}
 
           {activeTab === 'lecturers' && (
-            <div className="flex items-center gap-3">
+            <>
+            <div className="flex flex-wrap items-center gap-3">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
                 Lecturer:
               </label>
+              <div className="relative" ref={lecturerDropdownRef}>
+                <div className="relative flex items-center">
+                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                    <Icon name="search" className="h-4 w-4 text-slate-400" />
+                  </div>
+                  <input
+                    type="text"
+                    value={
+                      isLecturerDropdownOpen
+                        ? lecturerSearchQuery
+                        : selectedLecturerId === 'All'
+                        ? ''
+                        : selectedLecturerObj
+                        ? `${selectedLecturerObj.name} (${selectedLecturerObj.lecturer_id || 'ID'})`
+                        : ''
+                    }
+                    onChange={e => {
+                      setLecturerSearchQuery(e.target.value)
+                      if (!isLecturerDropdownOpen) setIsLecturerDropdownOpen(true)
+                    }}
+                    onFocus={() => {
+                      setIsLecturerDropdownOpen(true)
+                    }}
+                    placeholder={
+                      selectedLecturerId === 'All'
+                        ? 'Search lecturer by name or ID...'
+                        : selectedLecturerObj?.name || 'Search lecturer by name or ID...'
+                    }
+                    className="w-72 sm:w-80 rounded-xl border border-slate-300 bg-white py-2 pl-9 pr-16 text-sm font-semibold text-slate-800 placeholder:text-slate-400 placeholder:font-normal outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 transition shadow-2xs"
+                  />
+                  <div className="absolute inset-y-0 right-0 flex items-center pr-2 gap-0.5">
+                    {(selectedLecturerId !== 'All' || lecturerSearchQuery) && (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation()
+                          setSelectedLecturerId('All')
+                          setLecturerSearchQuery('')
+                          setIsLecturerDropdownOpen(false)
+                        }}
+                        className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        title="Reset to All Lecturers (Table View)"
+                      >
+                        <Icon name="x" className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsLecturerDropdownOpen(prev => !prev)}
+                      className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                      title={isLecturerDropdownOpen ? 'Close' : 'Open list'}
+                    >
+                      <Icon name={isLecturerDropdownOpen ? 'chevron-up' : 'chevron-down'} className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Dropdown Menu */}
+                {isLecturerDropdownOpen && (
+                  <div className="absolute left-0 top-full z-50 mt-1.5 max-h-80 w-80 sm:w-96 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl ring-1 ring-black/5">
+                    {/* Option: All Lecturers (Table View) */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedLecturerId('All')
+                        setLecturerSearchQuery('')
+                        setIsLecturerDropdownOpen(false)
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-xs font-bold transition ${
+                        selectedLecturerId === 'All'
+                          ? 'bg-brand-50 text-brand-700'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="grid h-6 w-6 place-items-center rounded-md bg-amber-100 text-amber-800 text-xs font-bold">
+                          📋
+                        </span>
+                        <div>
+                          <div className="font-bold">All Lecturers (Table View)</div>
+                          <div className="text-[10px] font-normal text-slate-500">View master table for all lecturers</div>
+                        </div>
+                      </div>
+                      {selectedLecturerId === 'All' && <span className="text-brand-600 font-bold">✓</span>}
+                    </button>
+
+                    <div className="my-1.5 border-t border-slate-100" />
+
+                    {/* Search Count Header */}
+                    <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Lecturers {filteredLecturers.length > 0 && `(${filteredLecturers.length})`}
+                    </div>
+
+                    {filteredLecturers.length === 0 ? (
+                      <div className="px-3 py-4 text-center text-xs text-slate-400 italic">
+                        No lecturer found matching &quot;{lecturerSearchQuery}&quot;
+                      </div>
+                    ) : (
+                      filteredLecturers.map(l => {
+                        const sessionsCount = Object.values(allLecturerSessions[l.id] || {}).reduce((acc, arr) => acc + arr.length, 0)
+                        const isSelected = selectedLecturerId === l.id
+
+                        return (
+                          <button
+                            key={l.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedLecturerId(l.id)
+                              setLecturerSearchQuery('')
+                              setIsLecturerDropdownOpen(false)
+                            }}
+                            className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left transition ${
+                              isSelected
+                                ? 'bg-brand-50 text-brand-700 font-semibold'
+                                : 'text-slate-800 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div
+                                className={`grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold text-white shadow-2xs ${
+                                  isSelected ? 'bg-brand-600' : 'bg-slate-600'
+                                }`}
+                              >
+                                {l.name.charAt(0)}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-bold text-slate-900">{l.name}</div>
+                                <div className="flex items-center gap-1.5 text-[10.5px] text-slate-500">
+                                  <span className="font-mono font-semibold text-brand-600 bg-brand-50 px-1 rounded">
+                                    ID: {l.lecturer_id || 'N/A'}
+                                  </span>
+                                  <span>•</span>
+                                  <span>{sessionsCount} periods</span>
+                                </div>
+                              </div>
+                            </div>
+                            {isSelected && <span className="text-brand-600 font-bold shrink-0">✓</span>}
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Shift:
+              </label>
               <select
-                value={selectedLecturerId}
-                onChange={e => setSelectedLecturerId(e.target.value)}
+                value={selectedShift}
+                onChange={e => setSelectedShift(e.target.value)}
                 className="rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-brand-500"
               >
-                <option value="All">All Lecturers (Table View)</option>
-                {allScheduledLecturers.map(l => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
+                <option value="All">All Shifts</option>
+                <option value="Morning">Morning Shift</option>
+                <option value="Afternoon">Afternoon Shift</option>
               </select>
             </div>
+            </>
           )}
 
           <div className="ml-auto text-xs text-slate-500 font-medium">
@@ -1221,7 +1488,7 @@ export function Schedule() {
           ) : !activeLecturers.length ? (
             <Empty
               title="No lecturer schedules found for this selection"
-              text="Generate timetables for classes in this semester using the Timetable page first."
+              text="Generate timetables for classes using the Timetable page first."
             />
           ) : (
             <>
