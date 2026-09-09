@@ -91,6 +91,11 @@ export function AppLayout() {
 
   async function remove(table, id) {
     if (!window.confirm('Delete this record? This cannot be undone.')) return
+    if (table === 'classes') {
+      await supabase.from('timetables').delete().eq('class_id', id)
+    } else if (table === 'semesters') {
+      await supabase.from('timetables').delete().eq('semester_id', id)
+    }
     const { error } = await supabase.from(table).delete().eq('id', id)
     if (error) return notify(error.message, 'error')
     notify('Record deleted.', 'success')

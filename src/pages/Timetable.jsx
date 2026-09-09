@@ -782,6 +782,7 @@ export function Timetable() {
           const savedGrid = row.grid
           const savedClassId = row.class_id
           const savedClass = classes.find(c => c.id === savedClassId)
+          if (!savedClass) return
 
           DAYS.forEach(day => {
             if (savedGrid && savedGrid[day] && Array.isArray(savedGrid[day])) {
@@ -908,6 +909,7 @@ export function Timetable() {
           const savedGrid = row.grid
           const savedClassId = row.class_id
           const savedClass = classes.find(c => c.id === savedClassId)
+          if (!savedClass) return
 
           DAYS.forEach(day => {
             if (savedGrid && savedGrid[day] && Array.isArray(savedGrid[day])) {
@@ -1306,6 +1308,7 @@ export function Timetable() {
     if (existingId) {
       const { error } = await supabase.from('timetables').delete().eq('id', existingId)
       if (error) { setNotice(`Failed to delete: ${error.message}`, 'error'); return }
+      await supabase.from('timetables').delete().eq('class_id', selectedClassId)
     }
     // Also clean up any old localStorage entries
     localStorage.removeItem(`saved_tt_${selectedClassId}`)
