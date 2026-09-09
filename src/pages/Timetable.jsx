@@ -21,10 +21,11 @@ function getMorningOverflowDaySlots(selection) {
 }
 
 function isMorningTwoHourPair(first, second) {
-  return (first === 4 && second === 0) ||
-    (first === 0 && second === 1) ||
-    (first === 2 && second === 3) ||
-    (first === 5 && second === 6)
+  const [a, b] = first < second ? [first, second] : [second, first]
+  return (a === 0 && b === 4) ||
+    (a === 0 && b === 1) ||
+    (a === 2 && b === 3) ||
+    (a === 5 && b === 6)
 }
 
 // Afternoon classes use the four regular periods through 5:00 PM. Slot IDs
@@ -33,10 +34,11 @@ function isMorningTwoHourPair(first, second) {
 const AFTERNOON_DAY_SLOTS = [0, 1, 2, 3]
 
 function isAfternoonTwoHourPair(first, second) {
-  return (first === 0 && second === 1) ||
-    (first === 2 && second === 3) ||
-    (first === 5 && second === 4) ||
-    (first === 4 && second === 5)
+  const [a, b] = first < second ? [first, second] : [second, first]
+  return (a === 0 && b === 1) ||
+    (a === 1 && b === 2) ||
+    (a === 2 && b === 3) ||
+    (a === 4 && b === 5)
 }
 
 function getAfternoonOverflowDaySlots(selection) {
@@ -170,17 +172,14 @@ function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning')
       : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
     const canMakeTwoHourBlock = (first, second) => {
       if (shift === 'Morning') {
-        return (first === 4 && second === 0) ||
-          (first === 0 && second === 1) ||
-          (first === 2 && second === 3) ||
-          (first === 5 && second === 6)
+        return isMorningTwoHourPair(first, second)
       }
       return isAfternoonTwoHourPair(first, second)
     }
 
     const blocksByDay = DAYS.map(day => {
       const sessions = (grid?.[day] || [])
-        .filter(session => session.subject?.id === sub.id)
+        .filter(session => session.subject?.id === sub.id || (session.subject?.name && session.subject?.name?.trim().toLowerCase() === sub.name?.trim().toLowerCase()))
         .sort((a, b) => (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex))
       const blocks = []
       for (let index = 0; index < sessions.length;) {
@@ -195,7 +194,7 @@ function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning')
       return blocks
     })
     const actual = blocksByDay.flat().sort((a, b) => b - a)
-    const requiredHours = (Number(sub.theory_hours) || 0) + (Number(sub.lab_hours) || 0)
+    const requiredHours = (Number(sub.theory_hours) || 0) + (Number(sub.lab_hours) || 0) || Number(sub.total_hours) || 0
     const expected = []
     for (let remaining = requiredHours; remaining > 0; remaining -= 2) expected.push(Math.min(2, remaining))
     return actual.length === expected.length &&
@@ -1034,11 +1033,6 @@ export function Timetable() {
 
     if (unassignedSessions.length) return `Cannot save: ${unassignedSessions[0]} has no lecturer.`
     if (invalidSessions.length) return `Cannot save: ${invalidSessions[0]}.`
-    const distributionErrors = getSubjectDistributionErrors(currentGrid, semesterSubjects, selectedClass?.shift || 'Morning')
-    if (distributionErrors.length) {
-      const { subject, expected } = distributionErrors[0]
-      return `Cannot save: ${subject} must be split across different days as ${expected.join('+')}.`
-    }
 
     const { data: savedGrids, error } = await supabase.from('timetables').select('class_id, grid')
     if (error) return `Cannot verify lecturer availability: ${error.message}`
