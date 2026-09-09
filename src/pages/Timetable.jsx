@@ -2,7 +2,8 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useOutletContext, useSearchParams, useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
-import html2pdf from 'html2pdf.js'
+import * as XLSXStyle from 'xlsx-js-style'
+const XLSX = XLSXStyle.default || XLSXStyle
 import { supabase } from '../lib/supabase'
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
@@ -32,10 +33,49 @@ function isMorningTwoHourPair(first, second) {
 const AFTERNOON_DAY_SLOTS = [0, 1, 2, 3]
 
 function isAfternoonTwoHourPair(first, second) {
-  return (first === 0 && second === 1) || (first === 2 && second === 3)
+  return (first === 0 && second === 1) ||
+    (first === 2 && second === 3) ||
+    (first === 5 && second === 4) ||
+    (first === 4 && second === 5)
 }
 
-function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0) {
+function getAfternoonOverflowDaySlots(selection) {
+  const slots = []
+  if (selection?.early_10 && selection?.early_11) {
+    slots.push(5, 4)
+  }
+  slots.push(0, 1, 2, 3)
+  if (selection?.early_11 && !selection?.early_10) {
+    slots.push(4)
+  }
+  if (selection?.early_10 && !selection?.early_11) {
+    slots.push(5)
+  }
+  return slots
+}
+
+function createOverflowSelection(totalHours, requiredPeriods = Math.max(0, totalHours - 20), requiredSingleSlots = 0, shift = 'Morning') {
+  if (shift === 'Afternoon') {
+    const selection = Object.fromEntries(DAYS.map(day => [day, { early_11: false, early_10: false }]))
+    let remaining = requiredPeriods
+    if (remaining === 1) {
+      selection[DAYS[DAYS.length - 1]].early_11 = true
+    } else if (remaining === 2) {
+      selection[DAYS[DAYS.length - 1]].early_11 = true
+      selection[DAYS[DAYS.length - 1]].early_10 = true
+    } else if (remaining > 2) {
+      for (let i = DAYS.length - 1; i >= 0 && remaining > 0; i--) {
+        const day = DAYS[i]
+        selection[day].early_11 = true
+        remaining--
+        if (remaining > 0) {
+          selection[day].early_10 = true
+          remaining--
+        }
+      }
+    }
+    return selection
+  }
   const selection = Object.fromEntries(DAYS.map(day => [day, { early: false, afternoon_1: false, afternoon_2: false }]))
   const extras = requiredPeriods
   // A 7:00 AM period is a required single-hour slot. Use no more than the
@@ -127,7 +167,7 @@ function getSubjectDistributionErrors(grid, semesterSubjects, shift = 'Morning')
   return semesterSubjects.flatMap(sub => {
     const slotOrder = shift === 'Morning'
       ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-      : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+      : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
     const canMakeTwoHourBlock = (first, second) => {
       if (shift === 'Morning') {
         return (first === 4 && second === 0) ||
@@ -301,6 +341,9 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
     if (size > 1 && shift === 'Morning' && blockSlots.some((slot, index) =>
       index > 0 && !isMorningTwoHourPair(blockSlots[index - 1], slot)
     )) return null
+    if (size > 1 && shift === 'Afternoon' && blockSlots.some((slot, index) =>
+      index > 0 && !isAfternoonTwoHourPair(blockSlots[index - 1], slot)
+    )) return null
 
     const lecturer = preferredLecturer
     if (!isLecturerAvailableOnDay(lecturer, day)) return null
@@ -321,13 +364,13 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   const daySlotsByDay = {}
   if (totalPeriods >= 20 || DAYS.some(day => {
     const selected = overflowSelection?.[day] || {}
-    return selected.early || selected.afternoon_1 || selected.afternoon_2
+    return selected.early || selected.afternoon_1 || selected.afternoon_2 || selected.early_11 || selected.early_10
   })) {
     DAYS.forEach(day => {
       const selected = overflowSelection?.[day] || {}
       daySlotsByDay[day] = shift === 'Morning'
         ? getMorningOverflowDaySlots(selected)
-        : [...AFTERNOON_DAY_SLOTS]
+        : getAfternoonOverflowDaySlots(selected)
     })
   } else {
     // Do not force a class with (for example) 18 hours into 4+4+4+3+3.
@@ -342,7 +385,12 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 
   const getDaySlots = (day) => daySlotsByDay[day] || []
   const getMaxSlots = (day) => getDaySlots(day).length
-  const getSlotKind = (slotIndex) => ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slotIndex] || 'standard')
+  const getSlotKind = (slotIndex) => {
+    if (shift === 'Afternoon') {
+      return { 4: 'early_11', 5: 'early_10' }[slotIndex] || 'standard'
+    }
+    return { 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slotIndex] || 'standard'
+  }
 
   const theoryDayIdxMap = {}
   let dayIdx = attemptSeed % DAYS.length
@@ -420,7 +468,7 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
   // It keeps 8:45–9:45 directly below 7:45–8:45 in the generated table.
   const slotOrder = shift === 'Morning'
     ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+    : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
   DAYS.forEach(day => timetable[day].sort((a, b) =>
     (slotOrder[a.slotIndex] ?? a.slotIndex) - (slotOrder[b.slotIndex] ?? b.slotIndex)
   ))
@@ -430,10 +478,18 @@ function generateSinglePassTimetable(semesterSubjects, lecturers, shift, selecte
 // Morning slot 5 is 1:00–2:00 PM, which overlaps afternoon slot 0.
 function getBlockingSlotIndex(currentShift, otherShift, otherSlotIndex) {
   if (currentShift === otherShift) return otherSlotIndex
-  if (currentShift === 'Morning' && otherShift === 'Afternoon' && otherSlotIndex === 0) return 5
-  if (currentShift === 'Morning' && otherShift === 'Afternoon' && otherSlotIndex === 1) return 6
-  if (currentShift === 'Afternoon' && otherShift === 'Morning' && otherSlotIndex === 5) return 0
-  if (currentShift === 'Afternoon' && otherShift === 'Morning' && otherSlotIndex === 6) return 1
+  if (currentShift === 'Morning' && otherShift === 'Afternoon') {
+    if (otherSlotIndex === 0) return 5
+    if (otherSlotIndex === 1) return 6
+    if (otherSlotIndex === 4) return 3
+    if (otherSlotIndex === 5) return 2
+  }
+  if (currentShift === 'Afternoon' && otherShift === 'Morning') {
+    if (otherSlotIndex === 5) return 0
+    if (otherSlotIndex === 6) return 1
+    if (otherSlotIndex === 3) return 4
+    if (otherSlotIndex === 2) return 5
+  }
   return null
 }
 
@@ -448,13 +504,13 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
   const availableSlots = {}
   if (totalPeriods >= 20 || DAYS.some(day => {
     const selected = overflowSelection?.[day] || {}
-    return selected.early || selected.afternoon_1 || selected.afternoon_2
+    return selected.early || selected.afternoon_1 || selected.afternoon_2 || selected.early_11 || selected.early_10
   })) {
     DAYS.forEach(day => {
       const extra = overflowSelection?.[day] || {}
       availableSlots[day] = shift === 'Morning'
         ? getMorningOverflowDaySlots(extra)
-        : [...AFTERNOON_DAY_SLOTS]
+        : getAfternoonOverflowDaySlots(extra)
     })
   } else {
     DAYS.forEach(day => { availableSlots[day] = shift === 'Morning' ? [0, 1, 2, 3] : [...AFTERNOON_DAY_SLOTS] })
@@ -476,7 +532,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
 
   const slotOrder = shift === 'Morning'
     ? { 4: 0, 0: 1, 1: 2, 2: 3, 3: 4, 5: 5, 6: 6 }
-    : { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+    : { 5: 0, 4: 1, 0: 2, 1: 3, 2: 4, 3: 5 }
   const arePairable = (daySlots, first, second) => {
     if (shift !== 'Morning') return isAfternoonTwoHourPair(first, second)
     // On an early-start day, 0+1 would strand the 7:00 AM slot and prevent
@@ -548,7 +604,7 @@ function generateWithBacktracking(semesterSubjects, shift, getSubjectLecturers, 
             if (!lecturerSlots[lecturer.id]) lecturerSlots[lecturer.id] = {}
             if (!lecturerSlots[lecturer.id][day]) lecturerSlots[lecturer.id][day] = new Set()
             lecturerSlots[lecturer.id][day].add(slot)
-            timetable[day].push({ slotIndex: slot, slotKind: ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slot] || 'standard'), subject: block.subject, type: block.sessionTypes[slotIndex], lecturer })
+            timetable[day].push({ slotIndex: slot, slotKind: (shift === 'Afternoon' ? ({ 4: 'early_11', 5: 'early_10' }[slot] || 'standard') : ({ 4: 'early', 5: 'afternoon_1', 6: 'afternoon_2' }[slot] || 'standard')), subject: block.subject, type: block.sessionTypes[slotIndex], lecturer })
           })
           lecturerLoad[lecturer.id] = (lecturerLoad[lecturer.id] || 0) + block.size
 
@@ -700,17 +756,20 @@ export function Timetable() {
     overflowSelection[day]?.early,
     overflowSelection[day]?.afternoon_1,
     overflowSelection[day]?.afternoon_2,
+    overflowSelection[day]?.early_11,
+    overflowSelection[day]?.early_10,
   ].filter(Boolean).length, 0)
   const selectedOverflowSingleSlots = getOverflowSingleSlotCount(overflowSelection)
-  const hasValidOverflowShape = selectedOverflowSingleSlots <= oddSubjectCount
+  const hasValidOverflowShape = selectedClass?.shift === 'Afternoon' ? true : (selectedOverflowSingleSlots <= oddSubjectCount)
 
   useEffect(() => {
     setOverflowSelection(createOverflowSelection(
       curriculumHours,
       requiredOverflowPeriods,
       Math.min(oddSubjectCount, requiredOverflowPeriods),
+      selectedClass?.shift || 'Morning'
     ))
-  }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount])
+  }, [curriculumHours, requiredOverflowPeriods, oddSubjectCount, selectedClass?.shift])
 
   // Load global busy map for other classes
   const loadGlobalBusyMap = useCallback(async (currentClassId, currentShift) => {
@@ -815,6 +874,10 @@ export function Timetable() {
       return
     }
     if (selectedClass.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape)) {
+      setNotice(`Choose exactly ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} before generating.`, 'error')
+      return
+    }
+    if (selectedClass.shift === 'Afternoon' && selectedOverflowPeriods !== requiredOverflowPeriods) {
       setNotice(`Choose exactly ${requiredOverflowPeriods} overflow period${requiredOverflowPeriods === 1 ? '' : 's'} before generating.`, 'error')
       return
     }
@@ -1038,78 +1101,185 @@ export function Timetable() {
     localStorage.removeItem('tt_class'); localStorage.removeItem('tt_grid')
   }
 
-  const createStaticTimetableCopy = () => {
-    const source = printRef.current
-    if (!source) return null
-    const copy = source.cloneNode(true)
-    copy.querySelectorAll('.no-print').forEach(node => node.remove())
-    copy.querySelectorAll('select').forEach(select => {
-      const value = document.createElement('span')
-      value.textContent = select.options[select.selectedIndex]?.text || '—'
-      value.className = 'print-select-value'
-      select.replaceWith(value)
-    })
-    return copy
-  }
-
-  // Use the browser's normal print dialog. It never needs a pop-up window.
-  const handlePrint = () => window.print()
-
-  const handleDownloadPdf = () => {
-    const el = printRef.current
-    if (!el) return
-    const className = `${selectedClass?.name}_${selectedSemester?.name}_${selectedYear}`.replace(/\s+/g, '_')
-    // PDF should look like a completed timetable, not the editable web form.
-    const pdfCopy = createStaticTimetableCopy()
-    if (!pdfCopy) return
-    const pdfSource = document.createElement('div')
-    pdfSource.style.cssText = 'position:fixed;left:-100000px;top:0;width:1000px;background:#fff;padding:24px;'
-    pdfSource.appendChild(pdfCopy)
-    document.body.appendChild(pdfSource)
-    html2pdf()
-      .set({
-        margin: 10,
-        filename: `Timetable_${className}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }, // Using portrait like the PDF sample
-      })
-      .from(pdfSource)
-      .save()
-      .then(() => pdfSource.remove())
-      .catch(() => pdfSource.remove())
+  // Use the browser's print dialog, setting the title to the class name so headers/saves show the class
+  const handlePrint = () => {
+    const originalTitle = document.title
+    const cleanClassName = (selectedClass?.name || 'Class').replace(/[^a-zA-Z0-9_-]/g, '_')
+    document.title = `Timetable_${cleanClassName}`
+    window.print()
+    setTimeout(() => {
+      document.title = originalTitle
+    }, 1000)
   }
 
   const handleExportExcel = () => {
-    const el = printRef.current
-    if (!el) return
-    const className = `${selectedClass?.name}_${selectedSemester?.name}`.replace(/\s+/g, '_')
-    
-    const clone = el.cloneNode(true)
-    const html = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <meta charset="utf-8" />
-        <style>
-          table { border-collapse: collapse; width: 100%; font-family: 'Times New Roman', serif; font-size: 11pt; }
-          th, td { border: 1px solid #000000; padding: 6px; text-align: center; }
-          th { background-color: #f1f5f9; font-weight: bold; }
-          .header-day { background-color: #d9eef9; font-weight: bold; }
-        </style>
-      </head>
-      <body>${clone.outerHTML}</body>
-      </html>
-    `
-    const blob = new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `Timetable_${className}.xls`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-    setNotice('Class Timetable exported to Excel successfully!', 'success')
+    if (!timetable || !selectedClass) {
+      setNotice('No timetable data available to export.', 'error')
+      return
+    }
+
+    const cleanClassName = (selectedClass?.name || 'Class').replace(/[^a-zA-Z0-9_-]/g, '_')
+    const semName = printableSemesterName.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const filename = `Timetable_${cleanClassName}_${semName}`
+
+    const wb = XLSX.utils.book_new()
+    const ws = {}
+    const merges = []
+    const rowHeights = []
+
+    const borderThinBlack = {
+      top: { style: 'thin', color: { rgb: '000000' } },
+      bottom: { style: 'thin', color: { rgb: '000000' } },
+      left: { style: 'thin', color: { rgb: '000000' } },
+      right: { style: 'thin', color: { rgb: '000000' } },
+    }
+
+    let currentRow = 0
+
+    // 1. Title Banner
+    merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 3 } })
+    rowHeights.push({ hpt: 28 })
+    for (let c = 0; c < 4; c++) {
+      const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+      ws[ref] = {
+        v: c === 0 ? `Period of ${selectedClass?.name || 'Class'} - ${printableSemesterName}` : '',
+        t: 's',
+        s: {
+          fill: { fgColor: { rgb: '1E3A8A' } },
+          font: { name: 'Arial', sz: 12, bold: true, color: { rgb: 'FFFFFF' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: borderThinBlack
+        }
+      }
+    }
+    currentRow++
+
+    // 2. Sub-info row (Academic Year, Shift, Room)
+    merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 3 } })
+    rowHeights.push({ hpt: 20 })
+    for (let c = 0; c < 4; c++) {
+      const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+      ws[ref] = {
+        v: c === 0 ? `Academic Year: ${selectedYear || '—'}   |   Shift: ${shift}   |   Room: ${selectedClass?.room || '—'}` : '',
+        t: 's',
+        s: {
+          fill: { fgColor: { rgb: 'F1F5F9' } },
+          font: { name: 'Arial', sz: 9.5, color: { rgb: '475569' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: borderThinBlack
+        }
+      }
+    }
+    currentRow++
+
+    // 3. Table Column Headers
+    const headers = ['Subject', 'Time', 'Lecturer', 'Type']
+    rowHeights.push({ hpt: 24 })
+    headers.forEach((hdr, c) => {
+      const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+      ws[ref] = {
+        v: hdr,
+        t: 's',
+        s: {
+          fill: { fgColor: { rgb: 'E2E8F0' } },
+          font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '0F172A' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: borderThinBlack
+        }
+      }
+    })
+    currentRow++
+
+    // 4. Days and Sessions
+    DAYS.forEach(day => {
+      const daySessions = timetable[day] || []
+      if (!daySessions.length) return
+
+      // Day Header Row (Soft blue #D9EEF9 matching web UI)
+      merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 3 } })
+      rowHeights.push({ hpt: 22 })
+      for (let c = 0; c < 4; c++) {
+        const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+        ws[ref] = {
+          v: c === 0 ? day : '',
+          t: 's',
+          s: {
+            fill: { fgColor: { rgb: 'D9EEF9' } },
+            font: { name: 'Arial', sz: 10.5, bold: true, color: { rgb: '000000' } },
+            alignment: { horizontal: 'center', vertical: 'center' },
+            border: borderThinBlack
+          }
+        }
+      }
+      currentRow++
+
+      // Session Rows
+      daySessions.forEach((session, sIdx) => {
+        const timeString = getTimeStringForSession(shift, daySessions.length, session.slotIndex, session.slotKind)
+        const subjectName = session.subject?.name || '—'
+        const lecturerName = session.lecturer?.name || '—'
+        const sessionType = session.type || '—'
+
+        rowHeights.push({ hpt: 24 })
+
+        const rowData = [
+          { val: subjectName, align: 'left', bold: true },
+          { val: timeString, align: 'center', bold: false },
+          { val: lecturerName, align: 'left', bold: false },
+          { val: sessionType, align: 'center', bold: false }
+        ]
+
+        const rowBg = sIdx % 2 === 0 ? 'FFFFFF' : 'F8FAFC'
+
+        rowData.forEach((col, c) => {
+          const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+          ws[ref] = {
+            v: col.val,
+            t: 's',
+            s: {
+              fill: { fgColor: { rgb: rowBg } },
+              font: { name: 'Arial', sz: 9.5, bold: col.bold, color: { rgb: '000000' } },
+              alignment: { horizontal: col.align, vertical: 'center', wrapText: true },
+              border: borderThinBlack
+            }
+          }
+        })
+        currentRow++
+      })
+    })
+
+    // 5. Total Periods Footer
+    merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 3 } })
+    rowHeights.push({ hpt: 22 })
+    for (let c = 0; c < 4; c++) {
+      const ref = XLSX.utils.encode_cell({ r: currentRow, c })
+      ws[ref] = {
+        v: c === 0 ? `Total Periods: ${totalPeriods}` : '',
+        t: 's',
+        s: {
+          fill: { fgColor: { rgb: 'F1F5F9' } },
+          font: { name: 'Arial', sz: 10, bold: true, color: { rgb: '000000' } },
+          alignment: { horizontal: 'center', vertical: 'center' },
+          border: borderThinBlack
+        }
+      }
+    }
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: currentRow, c: 3 } })
+    if (merges.length) ws['!merges'] = merges
+    ws['!cols'] = [
+      { wch: 32 },
+      { wch: 25 },
+      { wch: 30 },
+      { wch: 16 }
+    ]
+    ws['!rows'] = rowHeights
+
+    const sheetName = (selectedClass?.name || 'Timetable').slice(0, 31)
+    XLSX.utils.book_append_sheet(wb, ws, sheetName)
+
+    XLSX.writeFile(wb, `${filename}.xlsx`, { compression: true })
+    setNotice('Class Timetable exported to Excel (.xlsx) successfully!', 'success')
   }
 
   const handleGenerateAnother = () => {
@@ -1199,6 +1369,8 @@ export function Timetable() {
         ? (morningEarly[slotIdx] || `Period ${slotIdx + 1}`)
         : (morningDefault[slotIdx] || `Period ${slotIdx + 1}`)
     } else {
+      if (slotKind === 'early_11' || slotIdx === 4) return '11:00 AM – 12:00 PM'
+      if (slotKind === 'early_10' || slotIdx === 5) return '10:00 AM – 11:00 AM'
       const afternoonSlots = [
         '01:00 PM - 01:50 PM', '01:50 PM - 02:40 PM', '02:40 PM - 03:30 PM', 
         '04:00 PM - 05:00 PM', '05:00 PM - 05:50 PM', '05:50 PM - 06:40 PM', '06:40 PM - 07:30 PM'
@@ -1399,17 +1571,101 @@ export function Timetable() {
     <>
       <style>{`
         @media print {
-          @page { margin: 12mm; }
-          #print-timetable, #print-timetable * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          body * { visibility: hidden !important; }
-          #print-timetable, #print-timetable * { visibility: visible !important; }
-          #print-timetable { position: absolute; top: 0; left: 0; width: 100%; padding: 0 8mm; }
-          .no-print { display: none !important; }
-          #print-timetable select { appearance: none; -webkit-appearance: none; border: 0 !important; background: transparent !important; pointer-events: none; }
-          #print-timetable thead { display: table-header-group; }
-          #print-timetable tr { break-inside: avoid; page-break-inside: avoid; }
-          #print-timetable .print-title { display: block !important; }
-          #print-timetable .print-total { display: block !important; }
+          @page {
+            size: A4 portrait;
+            margin: 0; /* Removes browser header/footer (localhost URL and date) */
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+            height: auto !important;
+          }
+          body * {
+            visibility: hidden !important;
+          }
+          #print-timetable, #print-timetable * {
+            visibility: visible !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          #print-timetable {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 12mm 14mm 10mm 14mm !important;
+            box-sizing: border-box !important;
+            page-break-after: avoid !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+          .no-print {
+            display: none !important;
+          }
+          #print-timetable .print-title {
+            display: block !important;
+            font-size: 20pt !important;
+            margin-top: 0 !important;
+            margin-bottom: 14px !important;
+            text-align: center !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+          }
+          #print-timetable table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            font-size: 11.5pt !important;
+          }
+          #print-timetable th {
+            padding: 6px 8px !important;
+            font-size: 12pt !important;
+            font-weight: bold !important;
+            background-color: #ffffff !important;
+            border: 1.5px solid #000000 !important;
+            color: #000000 !important;
+          }
+          #print-timetable td {
+            padding: 5.5px 8px !important;
+            font-size: 11.5pt !important;
+            line-height: 1.3 !important;
+            border: 1px solid #000000 !important;
+            color: #000000 !important;
+          }
+          #print-timetable td[colspan="4"] {
+            padding: 5px 8px !important;
+            font-size: 12pt !important;
+            font-weight: bold !important;
+            background-color: #d9eef9 !important;
+            border: 1.5px solid #000000 !important;
+          }
+          #print-timetable select {
+            appearance: none !important;
+            -webkit-appearance: none !important;
+            border: 0 !important;
+            background: transparent !important;
+            pointer-events: none !important;
+            font-family: inherit !important;
+            font-size: inherit !important;
+            color: #000000 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+          }
+          #print-timetable tr {
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+          }
+          #print-timetable .print-total {
+            display: block !important;
+            font-size: 12.5pt !important;
+            margin-top: 14px !important;
+            text-align: center !important;
+            font-weight: bold !important;
+            color: #000000 !important;
+          }
         }
       `}</style>
 
@@ -1475,9 +1731,6 @@ export function Timetable() {
 
             <button onClick={handleExportExcel} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-emerald-700">
               <span className="text-base">📊</span> Excel
-            </button>
-            <button onClick={handleDownloadPdf} className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-rose-700">
-              <Icon name="print" className="h-4 w-4" /> PDF
             </button>
             <button onClick={handlePrint} className="inline-flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-brand-800">
               <Icon name="print" className="h-4 w-4" /> Print
@@ -1622,6 +1875,60 @@ export function Timetable() {
               </div>
             )}
 
+            {selectedClass?.shift === 'Afternoon' && requiredOverflowPeriods > 0 && (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-brand-950">Choose overflow periods</p>
+                    <p className="mt-0.5 text-xs text-slate-600">Select exactly the extra hours needed. Use 10:00 AM or 11:00 AM for early-start periods.</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${selectedOverflowPeriods === requiredOverflowPeriods ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {selectedOverflowPeriods} / {requiredOverflowPeriods}
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {DAYS.map(day => (
+                    <div key={day} className="grid grid-cols-[78px_repeat(2,minmax(0,1fr))] items-center gap-2 text-xs">
+                      <span className="font-semibold text-slate-700">{day.slice(0, 3)}</span>
+                      {[
+                        ['early_10', '10:00 AM – 11:00 AM'],
+                        ['early_11', '11:00 AM – 12:00 PM'],
+                      ].map(([period, label]) => {
+                        const checked = !!overflowSelection[day]?.[period]
+                        const reachedLimit = !checked && selectedOverflowPeriods >= requiredOverflowPeriods
+                        return (
+                          <label key={period} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={reachedLimit}
+                              onChange={event => setOverflowSelection(current => {
+                                const currentCount = DAYS.reduce((total, currentDay) => total + [
+                                  current[currentDay]?.early_10,
+                                  current[currentDay]?.early_11,
+                                ].filter(Boolean).length, 0)
+                                if (event.target.checked && currentCount >= requiredOverflowPeriods) return current
+                                return {
+                                  ...current,
+                                  [day]: {
+                                    ...current[day],
+                                    [period]: event.target.checked,
+                                  },
+                                }
+                              })}
+                              className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:cursor-not-allowed disabled:opacity-40"
+                            />
+                            {label}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Status: already has a timetable */}
             {alreadyHasTimetable && selectedClassId && selectedSemesterId && (
               <div className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-3 text-sm text-blue-900 flex items-start gap-2">
@@ -1643,7 +1950,7 @@ export function Timetable() {
 
             <button
               onClick={handleGenerate}
-              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable || (selectedClass?.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape))}
+              disabled={!selectedSemesterId || !selectedClassId || !semesterSubjects.length || alreadyHasTimetable || (selectedClass?.shift === 'Morning' && (selectedOverflowPeriods !== requiredOverflowPeriods || !hasValidOverflowShape)) || (selectedClass?.shift === 'Afternoon' && selectedOverflowPeriods !== requiredOverflowPeriods)}
               className="w-full rounded-xl bg-brand-600 py-3 font-bold text-white shadow-md shadow-brand-600/20 transition hover:bg-brand-800 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <Icon name="wand" className="h-5 w-5" />

@@ -3,8 +3,8 @@ import { useOutletContext, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { Icon } from '../components/Icon'
 import { Empty } from '../components/Empty'
-import html2pdf from 'html2pdf.js'
-import * as XLSX from 'xlsx'
+import * as XLSXStyle from 'xlsx-js-style'
+const XLSX = XLSXStyle.default || XLSXStyle
 
 const DAYS = ['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
 const DAY_SHORT = { Saturday: 'Sat', Sunday: 'Sun', Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed' }
@@ -48,25 +48,272 @@ function getSubjectStyle(subjectId) {
   return PASTEL_COLORS[Math.abs(hash) % PASTEL_COLORS.length]
 }
 
-function exportTableToExcel(tableElement, filename) {
-  if (!tableElement) return
-  const tables = Array.from(tableElement.querySelectorAll('table'))
+function colorToRgbHex(colorStr) {
+  if (!colorStr) return null
+  colorStr = String(colorStr).trim()
+  if (colorStr === 'transparent' || colorStr === 'rgba(0, 0, 0, 0)') return null
+  if (colorStr.startsWith('#')) {
+    let hex = colorStr.slice(1)
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]
+    }
+    return hex.toUpperCase().slice(0, 6)
+  }
+  const rgbMatch = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1], 10).toString(16).padStart(2, '0')
+    const g = parseInt(rgbMatch[2], 10).toString(16).padStart(2, '0')
+    const b = parseInt(rgbMatch[3], 10).toString(16).padStart(2, '0')
+    return (r + g + b).toUpperCase()
+  }
+  return null
+}
+
+const borderThinBlack = {
+  top: { style: 'thin', color: { rgb: '000000' } },
+  bottom: { style: 'thin', color: { rgb: '000000' } },
+  left: { style: 'thin', color: { rgb: '000000' } },
+  right: { style: 'thin', color: { rgb: '000000' } },
+}
+
+function exportTableToExcel(containerElement, filename) {
+  if (!containerElement) return
+  const tables = Array.from(containerElement.querySelectorAll('table'))
   if (!tables.length) throw new Error('No schedule table was found.')
 
   const workbook = XLSX.utils.book_new()
-  tables.forEach((table, index) => {
-    const worksheet = XLSX.utils.table_to_sheet(table, { raw: true })
-    worksheet['!cols'] = Array.from({ length: Math.max(2, table.rows[0]?.cells.length || 2) }, (_, column) => ({ wch: column < 2 ? 20 : 28 }))
-    const sheetName = tables.length === 1 ? 'Schedule' : `Schedule ${index + 1}`
+
+  tables.forEach((table, tableIndex) => {
+    // Determine sheet name
+    let sheetName = ''
+    const parentContainer = table.closest('.mb-8') || table.parentElement
+    const heading = parentContainer?.querySelector('h2')
+    const headingText = heading?.textContent || ''
+
+    if (headingText.includes('Morning')) {
+      sheetName = 'Morning Shift'
+    } else if (headingText.includes('Afternoon')) {
+      sheetName = 'Afternoon Shift'
+    } else if (table.closest('.lecturer-schedule')) {
+      sheetName = 'Lecturer Schedule'
+    } else if (tables.length === 1) {
+      sheetName = 'Master Schedule'
+    } else {
+      sheetName = `Schedule ${tableIndex + 1}`
+    }
+
+    // Clean sheetName for Excel rules (max 31 chars, no invalid characters)
+    sheetName = sheetName.replace(/[/\\?*:[\]]/g, '').slice(0, 31).trim() || `Sheet ${tableIndex + 1}`
+
+    // Build 2D grid matrix accounting for rowSpan & colSpan
+    const grid = []
+    let maxCol = 0
+
+    for (let r = 0; r < table.rows.length; r++) {
+      if (!grid[r]) grid[r] = []
+      const row = table.rows[r]
+      let c = 0
+      for (let ci = 0; ci < row.cells.length; ci++) {
+        while (grid[r][c]) {
+          c++
+        }
+        const cellEl = row.cells[ci]
+        const rowspan = cellEl.rowSpan || 1
+        const colspan = cellEl.colSpan || 1
+        for (let dr = 0; dr < rowspan; dr++) {
+          for (let dc = 0; dc < colspan; dc++) {
+            if (!grid[r + dr]) grid[r + dr] = []
+            grid[r + dr][c + dc] = { cellEl, isOrigin: dr === 0 && dc === 0 }
+          }
+        }
+        c += colspan
+        if (c > maxCol) maxCol = c
+      }
+    }
+
+    const numRows = grid.length
+    const numCols = maxCol
+
+    if (numRows === 0 || numCols === 0) return
+
+    const worksheet = {}
+    const merges = []
+    const rowHeights = []
+    const colWidths = []
+
+    const isClassGrid = table.querySelector('.day-col') !== null || table.querySelector('.time-col') !== null
+
+    for (let c = 0; c < numCols; c++) {
+      if (isClassGrid) {
+        if (c === 0) colWidths.push({ wch: 14 })       // Days
+        else if (c === 1) colWidths.push({ wch: 26 })  // Time
+        else colWidths.push({ wch: 32 })               // Class columns
+      } else {
+        if (c === 0) colWidths.push({ wch: 28 })       // Lecturer Name / Class
+        else if (c === numCols - 1) colWidths.push({ wch: 18 }) // Total Load / Type
+        else colWidths.push({ wch: 30 })               // Day sessions
+      }
+    }
+
+    for (let r = 0; r < numRows; r++) {
+      let isHeaderRow = r === 0
+      let isBreakRow = false
+
+      for (let c = 0; c < numCols; c++) {
+        const item = grid[r]?.[c]
+        const cellRef = XLSX.utils.encode_cell({ r, c })
+
+        if (!item) {
+          worksheet[cellRef] = {
+            v: '',
+            t: 's',
+            s: {
+              fill: { fgColor: { rgb: 'FFFFFF' } },
+              font: { name: 'Arial', sz: 9.5, color: { rgb: '000000' } },
+              alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+              border: borderThinBlack
+            }
+          }
+          continue
+        }
+
+        const { cellEl, isOrigin } = item
+        const rowspan = cellEl.rowSpan || 1
+        const colspan = cellEl.colSpan || 1
+
+        if (isOrigin && (rowspan > 1 || colspan > 1)) {
+          merges.push({
+            s: { r, c },
+            e: { r: r + rowspan - 1, c: c + colspan - 1 }
+          })
+        }
+
+        // Clean text content
+        let text = ''
+        if (isOrigin) {
+          const lecButton = cellEl.querySelector('button')
+          const lecIdDiv = cellEl.querySelector('.text-\\[10px\\]')
+          if (lecButton && cellEl.querySelector('.rounded-full')) {
+            text = lecButton.innerText.trim() + (lecIdDiv ? `\n(${lecIdDiv.innerText.trim()})` : '')
+          } else {
+            text = (cellEl.innerText || cellEl.textContent || '').trim()
+          }
+        }
+
+        // Extract styling
+        let inlineBg = cellEl.style?.backgroundColor
+        let inlineColor = cellEl.style?.color
+
+        const styledChild = cellEl.querySelector('[style*="background-color"], [style*="background"]')
+        if (!inlineBg && styledChild) {
+          inlineBg = styledChild.style?.backgroundColor
+          inlineColor = styledChild.style?.color
+        }
+
+        let computedStyle = null
+        if (typeof window !== 'undefined' && window.getComputedStyle) {
+          try {
+            computedStyle = window.getComputedStyle(cellEl)
+          } catch {
+            // ignore
+          }
+        }
+
+        let bgHex = colorToRgbHex(inlineBg) ||
+                    (computedStyle ? colorToRgbHex(computedStyle.backgroundColor) : null)
+
+        let textHex = colorToRgbHex(inlineColor) ||
+                      (computedStyle ? colorToRgbHex(computedStyle.color) : null)
+
+        const classNames = cellEl.className || ''
+        if (!bgHex) {
+          if (classNames.includes('bg-[#ffff00]') || classNames.includes('bg-yellow')) {
+            bgHex = 'FFFF00'
+          } else if (classNames.includes('bg-amber-50')) {
+            bgHex = 'FEF3C7'
+          } else if (classNames.includes('bg-[#d9eef9]')) {
+            bgHex = 'D9EEF9'
+          } else if (classNames.includes('bg-slate-50')) {
+            bgHex = 'F8FAFC'
+          } else {
+            bgHex = 'FFFFFF'
+          }
+        }
+
+        if (classNames.includes('bg-[#ffff00]')) {
+          bgHex = 'FFFF00'
+        }
+
+        if (classNames.includes('bg-amber-50') || text === 'Break') {
+          bgHex = 'FEF3C7'
+          textHex = '92400E'
+          isBreakRow = true
+        }
+
+        if (classNames.includes('ring-red-500') || cellEl.querySelector('.text-red-700')) {
+          if (!bgHex || bgHex === 'FFFFFF') bgHex = 'FEE2E2'
+          if (!textHex || textHex === '000000') textHex = '991B1B'
+        }
+
+        if (!bgHex) bgHex = 'FFFFFF'
+        if (!textHex) textHex = '000000'
+
+        const isHeader = cellEl.tagName === 'TH' || isHeaderRow
+        const isBold = isHeader ||
+                       classNames.includes('font-bold') ||
+                       classNames.includes('font-semibold') ||
+                       Boolean(computedStyle && String(computedStyle.fontWeight).match(/bold|700|600/i))
+
+        let horizAlign = 'center'
+        if (!isClassGrid && c === 0 && !isHeader) {
+          horizAlign = 'left'
+        }
+
+        worksheet[cellRef] = {
+          v: text,
+          t: 's',
+          s: {
+            fill: { fgColor: { rgb: bgHex } },
+            font: {
+              name: 'Arial',
+              sz: isHeader ? 10 : 9.5,
+              bold: isBold,
+              color: { rgb: textHex }
+            },
+            alignment: {
+              horizontal: horizAlign,
+              vertical: 'center',
+              wrapText: true
+            },
+            border: borderThinBlack
+          }
+        }
+      }
+
+      if (isHeaderRow) {
+        rowHeights.push({ hpt: 28 })
+      } else if (isBreakRow) {
+        rowHeights.push({ hpt: 24 })
+      } else {
+        rowHeights.push({ hpt: 38 })
+      }
+    }
+
+    worksheet['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: numRows - 1, c: numCols - 1 } })
+    if (merges.length) worksheet['!merges'] = merges
+    worksheet['!cols'] = colWidths
+    worksheet['!rows'] = rowHeights
+
     XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
   })
 
-  // This writes a real Excel workbook, not an HTML file with an .xls suffix.
   XLSX.writeFile(workbook, `${filename}.xlsx`, { compression: true })
 }
 
 function getSlotTimeLabel(shift, slotIndex, slotKind) {
   if (shift === 'Afternoon') {
+    if (slotKind === 'early_11' || slotIndex === 4) return '11:00 AM – 12:00 PM'
+    if (slotKind === 'early_10' || slotIndex === 5) return '10:00 AM – 11:00 AM'
     const slots = ['1:00–1:50 PM', '1:50–2:40 PM', '2:40–3:30 PM', '4:00–5:00 PM', '5:00–5:50 PM', '5:50–6:40 PM']
     return slots[slotIndex] || `Slot ${slotIndex + 1}`
   } else {
@@ -353,21 +600,21 @@ export function Schedule() {
     return { clashList, clashCellKeys }
   }, [semesterClasses, classes, activeTab, timetablesByClass])
 
-  const handlePrint = () => window.print()
-
-  const handleDownloadPdf = () => {
-    const el = printRef.current
-    const tabName = activeTab === 'classes' ? 'Classes' : 'Lecturers'
-    html2pdf()
-      .set({
-        margin: 6,
-        filename: `Schedule_${tabName}_${(selectedSemesterLevel || 'All_Semesters').replace(/\s+/g, '_')}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a3', orientation: 'landscape' },
-      })
-      .from(el)
-      .save()
+  const handlePrint = () => {
+    const originalTitle = document.title
+    if (activeTab === 'classes') {
+      document.title = `Master_Schedule_Classes_${(selectedSemesterLevel || 'All').replace(/\s+/g, '_')}`
+    } else {
+      if (selectedLecturerId !== 'All' && selectedLecturerObj) {
+        document.title = `Lecturer_Schedule_${selectedLecturerObj.name.replace(/\s+/g, '_')}`
+      } else {
+        document.title = `Master_Schedule_Lecturers_${(selectedSemesterLevel || 'All').replace(/\s+/g, '_')}`
+      }
+    }
+    window.print()
+    setTimeout(() => {
+      document.title = originalTitle
+    }, 1000)
   }
 
   const handleExportExcel = () => {
@@ -408,6 +655,22 @@ export function Schedule() {
     const dayHasNewEarly = {}
     const dayHasAfternoonOne = {}
     const dayHasAfternoonTwo = {}
+    const dayHasAfternoonEarly10 = {}
+    const dayHasAfternoonEarly11 = {}
+    DAYS.forEach(day => {
+      dayHasAfternoonEarly10[day] = false
+      dayHasAfternoonEarly11[day] = false
+    })
+    if (!isMorning) {
+      classList.forEach(cls => {
+        const grid = timetablesByClass[cls.id]
+        DAYS.forEach(day => {
+          const sessions = grid?.[day] || []
+          if (sessions.some(s => s.slotKind === 'early_10' || s.slotIndex === 5)) dayHasAfternoonEarly10[day] = true
+          if (sessions.some(s => s.slotKind === 'early_11' || s.slotIndex === 4)) dayHasAfternoonEarly11[day] = true
+        })
+      })
+    }
     if (isMorning) {
       DAYS.forEach(day => {
         dayHasOverflow[day] = false; dayHasSixthPeriod[day] = false
@@ -474,9 +737,12 @@ export function Schedule() {
                 // Standard days show 5 rows starting at 7:45 AM.
                 const daySlots = !isMorning
                   ? [
+                      ...(dayHasAfternoonEarly10[day] ? [{ slotIndex: 5, time: '10:00 AM – 11:00 AM' }] : []),
+                      ...(dayHasAfternoonEarly11[day] ? [{ slotIndex: 4, time: '11:00 AM – 12:00 PM' }] : []),
+                      ...((dayHasAfternoonEarly10[day] || dayHasAfternoonEarly11[day]) ? [{ isBreak: true, time: '12:00 PM – 1:00 PM (Break)' }] : []),
                       ...slots,
-                      ...(highestSlotByDay[day] >= 4 ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
-                      ...(highestSlotByDay[day] >= 5 ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
+                      ...(highestSlotByDay[day] >= 4 && !dayHasAfternoonEarly11[day] ? [{ slotIndex: 4, time: '5:00 PM – 5:50 PM' }] : []),
+                      ...(highestSlotByDay[day] >= 5 && !dayHasAfternoonEarly10[day] ? [{ slotIndex: 5, time: '5:50 PM – 6:40 PM' }] : []),
                     ]
                   : dayUsesNewSlotModel[day]
                     ? [
@@ -753,10 +1019,46 @@ export function Schedule() {
     <>
       <style>{`
         @media print {
-          body * { visibility: hidden !important; }
-          #schedule-print-content, #schedule-print-content * { visibility: visible !important; }
-          #schedule-print-content { position: absolute; inset: 0 auto auto 0; width: 100%; }
-          #schedule-print-content .lecturer-schedule { border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+          @page {
+            size: ${activeTab === 'lecturers' && selectedLecturerId !== 'All' ? 'portrait' : 'landscape'};
+            margin: 6mm;
+          }
+          html, body {
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+          }
+          body * {
+            visibility: hidden !important;
+          }
+          #schedule-print-content, #schedule-print-content * {
+            visibility: visible !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          #schedule-print-content {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          #schedule-print-content table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+          }
+          #schedule-print-content .lecturer-schedule {
+            border: 0 !important;
+            box-shadow: none !important;
+            padding: 0 !important;
+          }
+          #schedule-print-content .lecturer-schedule button {
+            display: none !important;
+          }
+          .no-print {
+            display: none !important;
+          }
         }
       `}</style>
       <header className="mb-6 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
@@ -777,15 +1079,6 @@ export function Schedule() {
           >
             <span>📊</span>
             Export to Excel
-          </button>
-
-          <button
-            onClick={handleDownloadPdf}
-            disabled={activeTab === 'classes' ? !semesterClasses.length : !activeLecturers.length}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-700 shadow-xs transition hover:bg-slate-50 disabled:opacity-50"
-          >
-            <Icon name="print" className="h-4 w-4 text-slate-500" />
-            PDF
           </button>
 
           <button
